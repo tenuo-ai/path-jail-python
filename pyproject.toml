@@ -32,7 +32,7 @@ Repository = "https://github.com/aimable100/path-jail-python"
 Documentation = "https://github.com/aimable100/path-jail-python#readme"
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
+dev = ["pytest>=7.0", "ruff>=0.4", "mypy>=1.0"]
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
@@ -41,4 +41,16 @@ module-name = "path_jail"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.9"
+strict = false
+ignore_missing_imports = true
 

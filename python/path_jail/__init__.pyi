@@ -1,11 +1,10 @@
 from os import PathLike
-from typing import Union
 
-StrOrPath = Union[str, PathLike[str]]
+StrOrPath = str | PathLike[str]
 
 class Jail:
     """A filesystem sandbox that restricts paths to a root directory.
-    
+
     All returned paths are canonicalized (symlinks resolved). On macOS,
     this means /var paths become /private/var.
     """
@@ -87,4 +86,3 @@ def join(root: StrOrPath, path: StrOrPath) -> str:
         IOError: If root does not exist
     """
     ...
-

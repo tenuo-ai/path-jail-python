@@ -1,3 +1,5 @@
+#![allow(clippy::useless_conversion)]
+
 use ::path_jail::{Jail as RustJail, JailError};
 use pyo3::exceptions::{PyIOError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -22,9 +24,7 @@ fn extract_path(obj: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
         }
     }
 
-    Err(PyTypeError::new_err(
-        "expected str or os.PathLike object",
-    ))
+    Err(PyTypeError::new_err("expected str or os.PathLike object"))
 }
 
 /// Convert JailError to Python exception
@@ -39,7 +39,9 @@ fn to_py_err(err: JailError) -> PyErr {
             "broken symlink at '{}' (cannot verify target)",
             path.display()
         )),
-        JailError::InvalidPath(reason) => PyValueError::new_err(format!("invalid path: {}", reason)),
+        JailError::InvalidPath(reason) => {
+            PyValueError::new_err(format!("invalid path: {}", reason))
+        }
         JailError::Io(err) => PyIOError::new_err(err.to_string()),
     }
 }
@@ -178,4 +180,3 @@ fn path_jail(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(join, m)?)?;
     Ok(())
 }
-

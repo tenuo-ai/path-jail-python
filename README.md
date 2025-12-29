@@ -1,6 +1,6 @@
 # path-jail
 
-Python bindings for [path_jail](https://github.com/aimable100/path_jail); a secure filesystem sandbox that restricts paths to a root directory, preventing traversal attacks.
+Python bindings for [path_jail](https://github.com/aimable100/path_jail), a secure filesystem sandbox that restricts paths to a root directory, preventing traversal attacks.
 
 ## Installation
 
