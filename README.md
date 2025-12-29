@@ -269,6 +269,55 @@ macOS automatically converts filenames to NFD (decomposed) form. A file saved as
 
 **Impact:** Not a security issue, but may cause "file not found" errors if comparing filenames byte-for-byte. Python's `os.path` handles this transparently for most cases.
 
+#### Case Sensitivity (Windows/macOS)
+
+Windows and macOS (by default) have case-insensitive filesystems:
+
+```python
+jail = Jail("/var/uploads")
+jail.join("FILE.txt")  # Points to same file as "file.txt"
+
+# Attacker could bypass naive blocklists:
+blocklist = ["secret.txt"]
+jail.join("SECRET.TXT")  # Not in blocklist, but same file!
+```
+
+**Mitigation:** Normalize case (e.g., `filename.lower()`) before blocklist checks.
+
+#### Trailing Dots and Spaces (Windows)
+
+Windows silently strips trailing dots and spaces from filenames:
+
+```python
+jail.join("file.txt.")   # Becomes "file.txt"
+jail.join("file.txt ")   # Becomes "file.txt"
+
+# Could bypass extension checks:
+if not filename.endswith(".exe"):
+    jail.join("malware.exe.")  # Passes check, becomes .exe!
+```
+
+**Mitigation:** Strip trailing dots/spaces before validation.
+
+#### Alternate Data Streams (Windows NTFS)
+
+NTFS supports alternate data streams that hide data from directory listings:
+
+```python
+jail.join("file.txt:hidden")  # Creates alternate stream
+```
+
+**Impact:** Not an escape, but can hide data. Consider rejecting filenames containing `:`.
+
+#### Special Filesystems (Linux)
+
+Avoid using path-jail with special filesystem roots:
+
+- `/proc` - `/proc/self/root` is a symlink to filesystem root
+- `/dev` - `/dev/fd/N` are symlinks to open file descriptors
+
+These are unlikely scenarios but worth noting for completeness.
+
 ### Path Canonicalization
 
 All returned paths are canonicalized (symlinks resolved, `..` eliminated). This is essential for security but may surprise you:
