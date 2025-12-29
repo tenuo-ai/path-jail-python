@@ -23,7 +23,7 @@ class TestJail:
         assert jail.root == os.path.realpath(jail_dir)
 
     def test_create_jail_nonexistent(self):
-        with pytest.raises(IOError):
+        with pytest.raises(OSError):
             Jail("/nonexistent/path")
 
     def test_join_simple(self, jail_dir):

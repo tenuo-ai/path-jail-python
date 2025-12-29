@@ -1,20 +1,19 @@
+"""Type stubs for path_jail."""
+
 from os import PathLike
 
-StrOrPath = str | PathLike[str]
+__version__: str
+
+_PathLike = str | PathLike[str]
 
 class Jail:
-    """A filesystem sandbox that restricts paths to a root directory.
+    """A filesystem sandbox that restricts paths to a root directory."""
 
-    All returned paths are canonicalized (symlinks resolved). On macOS,
-    this means /var paths become /private/var.
-    """
-
-    def __init__(self, root: StrOrPath) -> None:
+    def __init__(self, root: _PathLike) -> None:
         """Create a jail rooted at the given directory.
 
         Args:
-            root: Path to the jail root directory (must exist).
-                  Will be canonicalized.
+            root: Path to the jail root directory (must exist)
 
         Raises:
             IOError: If root does not exist or is not a directory
@@ -26,21 +25,21 @@ class Jail:
         """Returns the canonicalized root path."""
         ...
 
-    def join(self, path: StrOrPath) -> str:
+    def join(self, path: _PathLike) -> str:
         """Safely join a relative path to the jail root.
 
         Args:
             path: Relative path to join
 
         Returns:
-            Canonicalized absolute path inside the jail
+            Absolute path inside the jail
 
         Raises:
             ValueError: If path would escape the jail or is absolute
         """
         ...
 
-    def contains(self, path: StrOrPath) -> str:
+    def contains(self, path: _PathLike) -> str:
         """Verify an absolute path is inside the jail.
 
         Args:
@@ -54,7 +53,7 @@ class Jail:
         """
         ...
 
-    def relative(self, path: StrOrPath) -> str:
+    def relative(self, path: _PathLike) -> str:
         """Get the relative path from an absolute path inside the jail.
 
         Args:
@@ -68,7 +67,10 @@ class Jail:
         """
         ...
 
-def join(root: StrOrPath, path: StrOrPath) -> str:
+    def __repr__(self) -> str: ...
+    def __str__(self) -> str: ...
+
+def join(root: _PathLike, path: _PathLike) -> str:
     """One-shot path validation.
 
     This is a convenience function for validating a single path.
@@ -79,7 +81,7 @@ def join(root: StrOrPath, path: StrOrPath) -> str:
         path: Relative path to validate and join
 
     Returns:
-        Canonicalized absolute path inside the jail
+        Absolute path inside the jail
 
     Raises:
         ValueError: If path would escape the jail
