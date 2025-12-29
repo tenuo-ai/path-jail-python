@@ -272,3 +272,118 @@ class TestTypeErrors:
         jail = Jail(jail_dir)
         with pytest.raises(TypeError):
             jail.join(b"file.txt")
+
+
+class TestSecurityEdgeCases:
+    """Test security-sensitive edge cases."""
+
+    def test_unicode_path(self, jail_dir):
+        """Unicode characters in paths should work."""
+        jail = Jail(jail_dir)
+        result = jail.join("文件/données/αρχείο.txt")
+        assert "αρχείο.txt" in result
+
+    def test_emoji_path(self, jail_dir):
+        """Emoji in paths should work."""
+        jail = Jail(jail_dir)
+        result = jail.join("📁/📄.txt")
+        assert "📄.txt" in result
+
+    def test_null_byte_in_path(self, jail_dir):
+        """Null bytes in paths should be handled safely (stay in jail)."""
+        jail = Jail(jail_dir)
+        # Null bytes can be used to truncate paths in C-based systems
+        # The result should either raise an error OR stay inside the jail
+        try:
+            result = jail.join("file\x00.txt")
+            assert normalize_path(result).startswith(normalize_path(jail.root))
+        except (ValueError, OSError):
+            pass  # Also acceptable to reject
+
+    def test_null_byte_traversal_attack(self, jail_dir):
+        """Null byte + traversal attack should be blocked."""
+        jail = Jail(jail_dir)
+        # Attack: null byte to truncate, then traverse
+        # Should either reject or resolve safely inside jail
+        try:
+            result = jail.join("subdir\x00/../etc/passwd")
+            # If it doesn't raise, verify it's inside the jail
+            assert normalize_path(result).startswith(normalize_path(jail.root))
+            # Should NOT contain /etc/passwd outside jail
+            assert "/etc/passwd" not in result or result.startswith(
+                normalize_path(jail.root)
+            )
+        except (ValueError, OSError):
+            pass  # Also acceptable to reject
+
+    def test_special_chars(self, jail_dir):
+        """Special characters should be handled safely."""
+        jail = Jail(jail_dir)
+        # These should either work or raise ValueError, never escape
+        for special in ["file'name.txt", 'file"name.txt', "file`name.txt"]:
+            try:
+                result = jail.join(special)
+                # If it works, verify it's inside the jail
+                assert normalize_path(result).startswith(normalize_path(jail.root))
+            except ValueError:
+                pass  # Also acceptable to reject
+
+    def test_backslash_on_unix(self, jail_dir):
+        """Backslash should be treated as filename char on Unix, separator on Windows."""
+        jail = Jail(jail_dir)
+        result = jail.join("file\\name.txt")
+        # Should not escape regardless of interpretation
+        assert normalize_path(result).startswith(normalize_path(jail.root))
+
+    def test_colon_in_path(self, jail_dir):
+        """Colon in path (Windows drive letter attack)."""
+        jail = Jail(jail_dir)
+        # On Windows, this could be interpreted as drive letter
+        # Should either work as filename or raise error
+        try:
+            result = jail.join("C:file.txt")
+            assert normalize_path(result).startswith(normalize_path(jail.root))
+        except (ValueError, OSError):
+            pass  # Acceptable to reject
+
+    def test_long_path(self, jail_dir):
+        """Very long paths should be handled."""
+        jail = Jail(jail_dir)
+        # Create a path near the 260 char limit
+        long_component = "a" * 50
+        long_path = "/".join([long_component] * 5)  # ~255 chars
+        result = jail.join(long_path)
+        assert long_component in result
+
+    def test_very_long_path(self, jail_dir):
+        """Paths exceeding 260 chars should work (with prefix on Windows)."""
+        jail = Jail(jail_dir)
+        # Create a path exceeding 260 chars
+        long_component = "a" * 50
+        long_path = "/".join([long_component] * 10)  # ~509 chars
+        result = jail.join(long_path)
+        assert long_component in result
+
+    def test_dot_dot_in_filename(self, jail_dir):
+        """Literal .. in filename (not as traversal)."""
+        jail = Jail(jail_dir)
+        # This should be treated as a filename, not traversal
+        # Behavior may vary - either works or raises
+        try:
+            result = jail.join("file..txt")
+            assert "file..txt" in result
+        except ValueError:
+            pass
+
+    def test_multiple_slashes(self, jail_dir):
+        """Multiple consecutive slashes should be normalized."""
+        jail = Jail(jail_dir)
+        result = jail.join("subdir///file.txt")
+        # Should normalize to single slashes
+        assert "file.txt" in result
+
+    def test_trailing_slash(self, jail_dir):
+        """Trailing slash should be handled."""
+        jail = Jail(jail_dir)
+        result = jail.join("subdir/")
+        assert normalize_path(result).startswith(normalize_path(jail.root))

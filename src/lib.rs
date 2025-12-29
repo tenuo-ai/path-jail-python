@@ -6,24 +6,42 @@ use pyo3::prelude::*;
 use pyo3::types::PyString;
 use std::path::PathBuf;
 
+/// Maximum path length before we keep the \\?\ prefix on Windows.
+/// Windows MAX_PATH is 260, but we use 250 to leave room for filenames.
+#[cfg(windows)]
+const LONG_PATH_THRESHOLD: usize = 250;
+
 /// Normalize a path for user-friendly output at the Python boundary.
 /// On Windows, converts extended-length paths to standard format:
 /// - \\?\C:\path → C:\path
 /// - \\?\UNC\server\share → \\server\share
 ///
+/// For paths longer than 250 characters, keeps the \\?\ prefix to
+/// maintain long path support on Windows.
+///
 /// Note: This is only for Python-facing output. Internal Rust logic
-/// should use the original PathBuf to preserve starts_with consistency
-/// and support for paths >260 characters.
+/// should use the original PathBuf to preserve starts_with consistency.
 fn normalize_path(path: PathBuf) -> PathBuf {
     #[cfg(windows)]
     {
         let s = path.to_string_lossy();
+
         // Handle UNC paths: \\?\UNC\server\share → \\server\share
         if let Some(stripped) = s.strip_prefix(r"\\?\UNC\") {
-            return PathBuf::from(format!(r"\\{}", stripped));
+            let normalized = format!(r"\\{}", stripped);
+            // Keep prefix for long paths
+            if normalized.len() > LONG_PATH_THRESHOLD {
+                return path;
+            }
+            return PathBuf::from(normalized);
         }
+
         // Handle regular paths: \\?\C:\path → C:\path
         if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            // Keep prefix for long paths
+            if stripped.len() > LONG_PATH_THRESHOLD {
+                return path;
+            }
             return PathBuf::from(stripped);
         }
     }
