@@ -206,6 +206,90 @@ def upload(filename):
     return {"path": filename}
 ```
 
+## Security Considerations
+
+path-jail provides strong protection against path traversal attacks, but there are edge cases to be aware of:
+
+### What path-jail Protects Against
+
+- **Path traversal** (`../`, `..\\`) - Blocked
+- **Symlink escapes** - Symlinks pointing outside the jail are rejected
+- **Broken symlinks** - Rejected (cannot verify target)
+- **Absolute paths** - Rejected in `join()`
+
+### Known Limitations
+
+#### Hard Links
+
+Hard links cannot be detected by path inspection. If an attacker has shell access and creates a hard link to a sensitive file inside your jail directory, path-jail will allow access to it.
+
+```bash
+# Attacker with shell access:
+ln /etc/passwd /var/uploads/innocent.txt
+```
+
+**Mitigations:**
+- Use a separate partition for the jail (hard links cannot cross partitions)
+- Don't give untrusted users shell access
+- Use container isolation
+
+#### TOCTOU Race Conditions
+
+path-jail validates paths at call time. A symlink could be created between validation and use.
+
+```python
+safe_path = jail.join("file.txt")  # Validated
+# Attacker creates symlink here
+open(safe_path)                     # Escapes!
+```
+
+**Mitigations:**
+- Use `O_NOFOLLOW` when opening files
+- Use container/chroot isolation for strong guarantees
+
+#### Windows Reserved Device Names
+
+On Windows, filenames like `CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9` are special device names. For paths under 250 characters, we strip the `\\?\` prefix for usability, which re-enables this legacy behavior.
+
+```python
+# If an attacker uploads "CON.txt":
+safe_path = jail.join("CON.txt")   # Returns "C:\uploads\CON.txt"
+open(safe_path)                     # Opens console device, not file!
+```
+
+**Impact:** Denial of Service (thread hangs or data vanishes). Not a filesystem escape.
+
+**Mitigations:**
+- Validate filenames against a blocklist before calling path-jail
+- Use UUIDs for stored filenames instead of user-provided names
+
+#### Unicode Normalization (macOS)
+
+macOS automatically converts filenames to NFD (decomposed) form. A file saved as `cafe.txt` (with composed e) may be stored as `cafe.txt` (with decomposed e + combining accent).
+
+**Impact:** Not a security issue, but may cause "file not found" errors if comparing filenames byte-for-byte. Python's `os.path` handles this transparently for most cases.
+
+### Path Canonicalization
+
+All returned paths are canonicalized (symlinks resolved, `..` eliminated). This is essential for security but may surprise you:
+
+```python
+# macOS: /var is a symlink to /private/var
+jail = Jail("/var/uploads")
+print(jail.root)  # "/private/var/uploads"
+
+# Windows: Long paths (>250 chars) keep the \\?\ prefix
+jail = Jail("C:\\data")
+print(jail.join("a" * 300))  # "\\?\C:\data\aaa..."
+```
+
+When comparing paths, always canonicalize your expected values:
+
+```python
+import os
+assert result == os.path.realpath("/var/uploads/file.txt")
+```
+
 ## Performance
 
 path-jail crosses the Python/Rust boundary once per call. The tight syscall loop runs at native speed, making it significantly faster than equivalent pure-Python implementations for deep paths.
