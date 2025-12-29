@@ -1,9 +1,32 @@
 import os
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 from path_jail import Jail, join
+
+# Windows extended-length path prefix
+WIN_PREFIX = "\\\\?\\"
+
+
+def normalize_path(path: str) -> str:
+    """Normalize path for comparison (strips Windows \\?\\ prefix)."""
+    if path.startswith(WIN_PREFIX):
+        return path[len(WIN_PREFIX) :]
+    return path
+
+
+def paths_equal(a: str, b: str) -> bool:
+    """Compare paths, handling Windows extended-length paths."""
+    return normalize_path(a) == normalize_path(b)
+
+
+# Skip symlink tests on Windows (requires admin/Developer Mode)
+skip_symlinks_on_windows = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Symlinks require admin privileges on Windows",
+)
 
 
 @pytest.fixture
@@ -16,11 +39,11 @@ def jail_dir():
 class TestJail:
     def test_create_jail(self, jail_dir):
         jail = Jail(jail_dir)
-        assert jail.root == os.path.realpath(jail_dir)
+        assert paths_equal(jail.root, os.path.realpath(jail_dir))
 
     def test_create_jail_pathlike(self, jail_dir):
         jail = Jail(Path(jail_dir))
-        assert jail.root == os.path.realpath(jail_dir)
+        assert paths_equal(jail.root, os.path.realpath(jail_dir))
 
     def test_create_jail_nonexistent(self):
         with pytest.raises(OSError):
@@ -29,17 +52,17 @@ class TestJail:
     def test_join_simple(self, jail_dir):
         jail = Jail(jail_dir)
         result = jail.join("file.txt")
-        assert result == os.path.join(jail.root, "file.txt")
+        assert paths_equal(result, os.path.join(normalize_path(jail.root), "file.txt"))
 
     def test_join_nested(self, jail_dir):
         jail = Jail(jail_dir)
         result = jail.join("subdir/file.txt")
-        assert result == os.path.join(jail.root, "subdir", "file.txt")
+        assert paths_equal(result, os.path.join(normalize_path(jail.root), "subdir", "file.txt"))
 
     def test_join_pathlike(self, jail_dir):
         jail = Jail(jail_dir)
         result = jail.join(Path("subdir") / "file.txt")
-        assert result == os.path.join(jail.root, "subdir", "file.txt")
+        assert paths_equal(result, os.path.join(normalize_path(jail.root), "subdir", "file.txt"))
 
     def test_join_blocks_traversal(self, jail_dir):
         jail = Jail(jail_dir)
@@ -63,8 +86,8 @@ class TestJail:
         Path(test_file).touch()
 
         result = jail.contains(test_file)
-        # Compare canonicalized paths (handles /var -> /private/var on macOS)
-        assert result == os.path.realpath(test_file)
+        # Compare canonicalized paths (handles /var -> /private/var on macOS, \\?\ on Windows)
+        assert paths_equal(result, os.path.realpath(test_file))
 
     def test_contains_outside(self, jail_dir):
         jail = Jail(jail_dir)
@@ -78,7 +101,8 @@ class TestJail:
         Path(test_file).touch()
 
         result = jail.relative(test_file)
-        assert result == os.path.join("subdir", "file.txt")
+        # On Windows, path separator might differ
+        assert normalize_path(result) == os.path.join("subdir", "file.txt")
 
     def test_repr(self, jail_dir):
         jail = Jail(jail_dir)
@@ -94,7 +118,7 @@ class TestJoinFunction:
     def test_join_simple(self, jail_dir):
         result = join(jail_dir, "file.txt")
         expected = os.path.join(os.path.realpath(jail_dir), "file.txt")
-        assert result == expected
+        assert paths_equal(result, expected)
 
     def test_join_blocks_traversal(self, jail_dir):
         with pytest.raises(ValueError, match="escapes"):
@@ -103,9 +127,10 @@ class TestJoinFunction:
     def test_join_pathlike(self, jail_dir):
         result = join(Path(jail_dir), Path("file.txt"))
         expected = os.path.join(os.path.realpath(jail_dir), "file.txt")
-        assert result == expected
+        assert paths_equal(result, expected)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Symlinks require admin on Windows")
 class TestSymlinks:
     """Test symlink security handling."""
 
@@ -150,7 +175,7 @@ class TestSymlinks:
         os.symlink(real_file, link_path)
 
         result = jail.contains(link_path)
-        assert result == os.path.realpath(real_file)
+        assert paths_equal(result, os.path.realpath(real_file))
 
     def test_internal_dir_symlink_allowed(self, jail_dir):
         """Symlink to directory inside jail should work."""
@@ -174,25 +199,25 @@ class TestEdgeCases:
         """Single dot should resolve to jail root."""
         jail = Jail(jail_dir)
         result = jail.join(".")
-        assert result == jail.root
+        assert paths_equal(result, jail.root)
 
     def test_dot_in_path(self, jail_dir):
         """Dot in path should be normalized."""
         jail = Jail(jail_dir)
         result = jail.join("./subdir/./file.txt")
-        assert result == os.path.join(jail.root, "subdir", "file.txt")
+        assert paths_equal(result, os.path.join(normalize_path(jail.root), "subdir", "file.txt"))
 
     def test_internal_parent_traversal(self, jail_dir):
         """foo/../bar should resolve to bar (stays in jail)."""
         jail = Jail(jail_dir)
         result = jail.join("foo/../bar.txt")
-        assert result == os.path.join(jail.root, "bar.txt")
+        assert paths_equal(result, os.path.join(normalize_path(jail.root), "bar.txt"))
 
     def test_deep_internal_traversal(self, jail_dir):
         """a/b/c/../../d should resolve correctly."""
         jail = Jail(jail_dir)
         result = jail.join("a/b/c/../../d.txt")
-        assert result == os.path.join(jail.root, "a", "d.txt")
+        assert paths_equal(result, os.path.join(normalize_path(jail.root), "a", "d.txt"))
 
     def test_empty_path(self, jail_dir):
         """Empty path should resolve to jail root or error."""
@@ -200,7 +225,7 @@ class TestEdgeCases:
         # Behavior depends on implementation - either root or error
         try:
             result = jail.join("")
-            assert result == jail.root
+            assert paths_equal(result, jail.root)
         except ValueError:
             pass  # Also acceptable
 
