@@ -7,7 +7,7 @@
 
 A secure filesystem sandbox for Python. Restricts paths to a root directory, preventing traversal attacks while supporting files that don't exist yet.
 
-Built with Rust via [PyO3](https://pyo3.rs/) for native performance.
+Built with Rust via [PyO3](https://pyo3.rs/) for native performance. Python bindings for [`path_jail`](https://crates.io/crates/path_jail).
 
 ## Installation
 
@@ -111,6 +111,15 @@ jail = Jail(Path("/var/uploads"))
 safe = jail.join(Path("user") / "file.txt")
 ```
 
+## Type Hints
+
+path-jail is fully typed. Your IDE will provide autocompletion and type checking:
+
+```python
+# mypy and pyright will catch this:
+jail.join(123)  # error: Argument 1 has incompatible type "int"
+```
+
 ## Error Handling
 
 ```python
@@ -188,6 +197,7 @@ async def upload(filename: str, file: UploadFile):
 ### Flask
 
 ```python
+from pathlib import Path
 from flask import Flask, request, abort
 from path_jail import Jail
 
@@ -204,6 +214,29 @@ def upload(filename):
     Path(safe_path).parent.mkdir(parents=True, exist_ok=True)
     request.files["file"].save(safe_path)
     return {"path": filename}
+```
+
+### Django
+
+```python
+from pathlib import Path
+from django.conf import settings
+from django.http import JsonResponse, HttpResponseBadRequest
+from path_jail import Jail
+
+uploads = Jail(settings.MEDIA_ROOT)
+
+def upload(request, filename):
+    try:
+        safe_path = uploads.join(filename)
+    except ValueError:
+        return HttpResponseBadRequest("Invalid filename")
+    
+    Path(safe_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(safe_path, "wb") as f:
+        for chunk in request.FILES["file"].chunks():
+            f.write(chunk)
+    return JsonResponse({"path": filename})
 ```
 
 ## Security Considerations
@@ -342,6 +375,10 @@ assert result == os.path.realpath("/var/uploads/file.txt")
 ## Performance
 
 path-jail crosses the Python/Rust boundary once per call. The tight syscall loop runs at native speed, making it significantly faster than equivalent pure-Python implementations for deep paths.
+
+## Thread Safety
+
+`Jail` instances are thread-safe and can be shared across threads without locks.
 
 ## Development
 
