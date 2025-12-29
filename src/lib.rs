@@ -6,6 +6,30 @@ use pyo3::prelude::*;
 use pyo3::types::PyString;
 use std::path::PathBuf;
 
+/// Normalize a path for user-friendly output at the Python boundary.
+/// On Windows, converts extended-length paths to standard format:
+/// - \\?\C:\path → C:\path
+/// - \\?\UNC\server\share → \\server\share
+///
+/// Note: This is only for Python-facing output. Internal Rust logic
+/// should use the original PathBuf to preserve starts_with consistency
+/// and support for paths >260 characters.
+fn normalize_path(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let s = path.to_string_lossy();
+        // Handle UNC paths: \\?\UNC\server\share → \\server\share
+        if let Some(stripped) = s.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{}", stripped));
+        }
+        // Handle regular paths: \\?\C:\path → C:\path
+        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped);
+        }
+    }
+    path
+}
+
 /// Extract a path from a Python object (str or os.PathLike).
 fn extract_path(obj: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
     // Try str first
@@ -76,7 +100,7 @@ impl Jail {
     /// Returns the canonicalized root path.
     #[getter]
     fn root(&self) -> PathBuf {
-        self.inner.root().to_owned()
+        normalize_path(self.inner.root().to_owned())
     }
 
     /// Safely join a relative path to the jail root.
@@ -91,7 +115,10 @@ impl Jail {
     ///     ValueError: If path would escape the jail or is absolute
     fn join(&self, path: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
         let path = extract_path(path)?;
-        self.inner.join(&path).map_err(to_py_err)
+        self.inner
+            .join(&path)
+            .map(normalize_path)
+            .map_err(to_py_err)
     }
 
     /// Verify an absolute path is inside the jail.
@@ -106,7 +133,10 @@ impl Jail {
     ///     ValueError: If path is outside the jail or not absolute
     fn contains(&self, path: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
         let path = extract_path(path)?;
-        self.inner.contains(&path).map_err(to_py_err)
+        self.inner
+            .contains(&path)
+            .map(normalize_path)
+            .map_err(to_py_err)
     }
 
     /// Get the relative path from an absolute path inside the jail.
@@ -121,15 +151,23 @@ impl Jail {
     ///     ValueError: If path is outside the jail
     fn relative(&self, path: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
         let path = extract_path(path)?;
-        self.inner.relative(&path).map_err(to_py_err)
+        self.inner
+            .relative(&path)
+            .map(normalize_path)
+            .map_err(to_py_err)
     }
 
     fn __repr__(&self) -> String {
-        format!("Jail('{}')", self.inner.root().display())
+        format!(
+            "Jail('{}')",
+            normalize_path(self.inner.root().to_owned()).display()
+        )
     }
 
     fn __str__(&self) -> String {
-        self.inner.root().to_string_lossy().into_owned()
+        normalize_path(self.inner.root().to_owned())
+            .to_string_lossy()
+            .into_owned()
     }
 }
 
@@ -157,7 +195,9 @@ impl Jail {
 fn join(root: &Bound<'_, PyAny>, path: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
     let root = extract_path(root)?;
     let path = extract_path(path)?;
-    ::path_jail::join(&root, &path).map_err(to_py_err)
+    ::path_jail::join(&root, &path)
+        .map(normalize_path)
+        .map_err(to_py_err)
 }
 
 /// Secure filesystem sandbox for Python.
