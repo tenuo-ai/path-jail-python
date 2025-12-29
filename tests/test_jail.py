@@ -91,8 +91,13 @@ class TestJail:
 
     def test_contains_outside(self, jail_dir):
         jail = Jail(jail_dir)
+        # Use a path that's absolute on the current platform but outside the jail
+        if sys.platform == "win32":
+            outside_path = "C:\\Windows\\System32\\cmd.exe"
+        else:
+            outside_path = "/etc/passwd"
         with pytest.raises(ValueError, match="escapes"):
-            jail.contains("/etc/passwd")
+            jail.contains(outside_path)
 
     def test_relative(self, jail_dir):
         jail = Jail(jail_dir)
