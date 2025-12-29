@@ -4,13 +4,18 @@ from typing import Union
 StrOrPath = Union[str, PathLike[str]]
 
 class Jail:
-    """A filesystem sandbox that restricts paths to a root directory."""
+    """A filesystem sandbox that restricts paths to a root directory.
+    
+    All returned paths are canonicalized (symlinks resolved). On macOS,
+    this means /var paths become /private/var.
+    """
 
     def __init__(self, root: StrOrPath) -> None:
         """Create a jail rooted at the given directory.
 
         Args:
-            root: Path to the jail root directory (must exist)
+            root: Path to the jail root directory (must exist).
+                  Will be canonicalized.
 
         Raises:
             IOError: If root does not exist or is not a directory
@@ -29,7 +34,7 @@ class Jail:
             path: Relative path to join
 
         Returns:
-            Absolute path inside the jail
+            Canonicalized absolute path inside the jail
 
         Raises:
             ValueError: If path would escape the jail or is absolute
@@ -75,7 +80,7 @@ def join(root: StrOrPath, path: StrOrPath) -> str:
         path: Relative path to validate and join
 
     Returns:
-        Absolute path inside the jail
+        Canonicalized absolute path inside the jail
 
     Raises:
         ValueError: If path would escape the jail
