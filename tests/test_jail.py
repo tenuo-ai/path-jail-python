@@ -310,9 +310,7 @@ class TestSecurityEdgeCases:
             # If it doesn't raise, verify it's inside the jail
             assert normalize_path(result).startswith(normalize_path(jail.root))
             # Should NOT contain /etc/passwd outside jail
-            assert "/etc/passwd" not in result or result.startswith(
-                normalize_path(jail.root)
-            )
+            assert "/etc/passwd" not in result or result.startswith(normalize_path(jail.root))
         except (ValueError, OSError):
             pass  # Also acceptable to reject
 

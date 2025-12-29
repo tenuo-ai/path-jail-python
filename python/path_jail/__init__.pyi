@@ -7,7 +7,16 @@ __version__: str
 _PathLike = str | PathLike[str]
 
 class Jail:
-    """A filesystem sandbox that restricts paths to a root directory."""
+    """A filesystem sandbox that restricts paths to a root directory.
+
+    All returned paths are canonicalized (symlinks resolved, '..' eliminated).
+
+    Note:
+        On Windows, returns standard paths (e.g. ``C:\\...``) when possible.
+        For paths exceeding Windows limits (>250 chars), the ``\\\\?\\`` prefix
+        is preserved to ensure OS compatibility. Avoid regex patterns like
+        ``^C:\\\\`` that assume a specific format.
+    """
 
     def __init__(self, root: _PathLike) -> None:
         """Create a jail rooted at the given directory.
@@ -16,13 +25,17 @@ class Jail:
             root: Path to the jail root directory (must exist)
 
         Raises:
-            IOError: If root does not exist or is not a directory
+            OSError: If root does not exist or is not a directory
         """
         ...
 
     @property
     def root(self) -> str:
-        """Returns the canonicalized root path."""
+        """Returns the canonicalized root path.
+
+        Note:
+            On Windows, may include ``\\\\?\\`` prefix for long paths.
+        """
         ...
 
     def join(self, path: _PathLike) -> str:
@@ -32,7 +45,8 @@ class Jail:
             path: Relative path to join
 
         Returns:
-            Absolute path inside the jail
+            Absolute path inside the jail. On Windows, may include ``\\\\?\\``
+            prefix for paths exceeding 250 characters.
 
         Raises:
             ValueError: If path would escape the jail or is absolute
@@ -46,7 +60,8 @@ class Jail:
             path: Absolute path to verify (must exist)
 
         Returns:
-            Canonicalized path if inside the jail
+            Canonicalized path if inside the jail. On Windows, may include
+            ``\\\\?\\`` prefix for paths exceeding 250 characters.
 
         Raises:
             ValueError: If path is outside the jail or not absolute
@@ -81,10 +96,16 @@ def join(root: _PathLike, path: _PathLike) -> str:
         path: Relative path to validate and join
 
     Returns:
-        Absolute path inside the jail
+        Absolute path inside the jail. On Windows, may include ``\\\\?\\``
+        prefix for paths exceeding 250 characters.
 
     Raises:
         ValueError: If path would escape the jail
-        IOError: If root does not exist
+        OSError: If root does not exist
+
+    Note:
+        On Windows, returns standard paths (e.g. ``C:\\...``) when possible.
+        For paths exceeding Windows limits (>250 chars), the ``\\\\?\\`` prefix
+        is preserved to ensure OS compatibility.
     """
     ...
