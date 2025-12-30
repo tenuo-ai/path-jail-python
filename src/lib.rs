@@ -48,6 +48,12 @@ fn normalize_path(path: PathBuf) -> PathBuf {
     path
 }
 
+/// Convert a PathBuf to a String for Python.
+/// Uses lossy conversion which replaces invalid UTF-8 with replacement character.
+fn path_to_string(path: PathBuf) -> String {
+    path.to_string_lossy().into_owned()
+}
+
 /// Extract a path from a Python object (str or os.PathLike).
 ///
 /// Rejects paths containing null bytes. While Python's open() would also reject them,
@@ -131,8 +137,8 @@ impl Jail {
 
     /// Returns the canonicalized root path.
     #[getter]
-    fn root(&self) -> PathBuf {
-        normalize_path(self.inner.root().to_owned())
+    fn root(&self) -> String {
+        path_to_string(normalize_path(self.inner.root().to_owned()))
     }
 
     /// Safely join a relative path to the jail root.
@@ -145,11 +151,12 @@ impl Jail {
     ///
     /// Raises:
     ///     ValueError: If path would escape the jail or is absolute
-    fn join(&self, path: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
+    fn join(&self, path: &Bound<'_, PyAny>) -> PyResult<String> {
         let path = extract_path(path)?;
         self.inner
             .join(&path)
             .map(normalize_path)
+            .map(path_to_string)
             .map_err(to_py_err)
     }
 
@@ -163,11 +170,12 @@ impl Jail {
     ///
     /// Raises:
     ///     ValueError: If path is outside the jail or not absolute
-    fn contains(&self, path: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
+    fn contains(&self, path: &Bound<'_, PyAny>) -> PyResult<String> {
         let path = extract_path(path)?;
         self.inner
             .contains(&path)
             .map(normalize_path)
+            .map(path_to_string)
             .map_err(to_py_err)
     }
 
@@ -181,11 +189,12 @@ impl Jail {
     ///
     /// Raises:
     ///     ValueError: If path is outside the jail
-    fn relative(&self, path: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
+    fn relative(&self, path: &Bound<'_, PyAny>) -> PyResult<String> {
         let path = extract_path(path)?;
         self.inner
             .relative(&path)
             .map(normalize_path)
+            .map(path_to_string)
             .map_err(to_py_err)
     }
 
@@ -224,11 +233,12 @@ impl Jail {
 ///     >>> safe = join("/var/uploads", "user/file.txt")
 ///     >>> join("/var/uploads", "../../etc/passwd")  # Raises ValueError
 #[pyfunction]
-fn join(root: &Bound<'_, PyAny>, path: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
+fn join(root: &Bound<'_, PyAny>, path: &Bound<'_, PyAny>) -> PyResult<String> {
     let root = extract_path(root)?;
     let path = extract_path(path)?;
     ::path_jail::join(&root, &path)
         .map(normalize_path)
+        .map(path_to_string)
         .map_err(to_py_err)
 }
 
