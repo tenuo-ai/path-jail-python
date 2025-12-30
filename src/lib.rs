@@ -72,13 +72,13 @@ fn extract_path(obj: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
 
     // Try str first
     if let Ok(s) = obj.downcast::<PyString>() {
-        return validate_path(s.to_str()?);
+        return validate_path(&s.to_cow()?);
     }
 
     // Try os.PathLike via __fspath__
     if let Ok(fspath) = obj.call_method0("__fspath__") {
         if let Ok(s) = fspath.downcast::<PyString>() {
-            return validate_path(s.to_str()?);
+            return validate_path(&s.to_cow()?);
         }
         // Could be bytes, but we only support str paths
         if let Ok(s) = fspath.extract::<String>() {
