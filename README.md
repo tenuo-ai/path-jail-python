@@ -249,6 +249,7 @@ path-jail provides strong protection against path traversal attacks, but there a
 - **Symlink escapes** - Symlinks pointing outside the jail are rejected
 - **Broken symlinks** - Rejected (cannot verify target)
 - **Absolute paths** - Rejected in `join()`
+- **Null bytes** - Rejected (prevents C-library truncation attacks)
 
 ### Known Limitations
 
@@ -350,6 +351,10 @@ Avoid using path-jail with special filesystem roots:
 - `/dev` - `/dev/fd/N` are symlinks to open file descriptors
 
 These are unlikely scenarios but worth noting for completeness.
+
+#### Path Encoding
+
+Returned paths are converted to Python strings using lossy UTF-8 conversion. On rare filesystems with non-UTF8 filenames, invalid bytes are replaced with `�` (U+FFFD). This affects only the returned string; the security check uses the original bytes.
 
 ### Path Canonicalization
 
