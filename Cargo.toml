@@ -12,7 +12,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 path_jail = "0.2"
-pyo3 = { version = "0.24", features = ["extension-module"] }
+pyo3 = { version = "0.24", features = ["extension-module", "abi3-py39"] }
 
 [package.metadata]
 authors = ["Niki A. <dev@tenuo.dev>"]

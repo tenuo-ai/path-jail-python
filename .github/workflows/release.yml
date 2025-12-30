@@ -23,7 +23,7 @@ jobs:
         uses: PyO3/maturin-action@86b9d133d34bc1b40018696f782949dac11bd380 # v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist -i python3.9 -i python3.10 -i python3.11 -i python3.12 -i python3.13
+          args: --release --out dist
           manylinux: auto
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
