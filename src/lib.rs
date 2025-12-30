@@ -105,6 +105,8 @@ fn to_py_err(err: JailError) -> PyErr {
             PyValueError::new_err(format!("invalid path: {}", reason))
         }
         JailError::Io(err) => PyIOError::new_err(err.to_string()),
+        // Handle future error variants from path_jail crate
+        _ => PyValueError::new_err(format!("path_jail error: {}", err)),
     }
 }
 

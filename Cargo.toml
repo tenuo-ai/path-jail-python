@@ -1,6 +1,6 @@
 [package]
 name = "path_jail_py"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Python bindings for path_jail - secure filesystem sandbox"
@@ -11,7 +11,7 @@ name = "path_jail"
 crate-type = ["cdylib"]
 
 [dependencies]
-path_jail = "0.1"
+path_jail = "0.2"
 pyo3 = { version = "0.24", features = ["extension-module"] }
 
 [package.metadata]
