@@ -1,9 +1,9 @@
 # path-jail
 
-[![CI](https://github.com/aimable100/path-jail-python/actions/workflows/ci.yml/badge.svg)](https://github.com/aimable100/path-jail-python/actions/workflows/ci.yml)
+[![CI](https://github.com/tenuo-ai/path-jail-python/actions/workflows/ci.yml/badge.svg)](https://github.com/tenuo-ai/path-jail-python/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/path-jail.svg)](https://pypi.org/project/path-jail/)
 [![Python](https://img.shields.io/pypi/pyversions/path-jail.svg)](https://pypi.org/project/path-jail/)
-[![License](https://img.shields.io/pypi/l/path-jail.svg)](https://github.com/aimable100/path-jail-python#license)
+[![License](https://img.shields.io/pypi/l/path-jail.svg)](https://github.com/tenuo-ai/path-jail-python#license)
 
 A secure filesystem sandbox for Python. Restricts paths to a root directory, preventing traversal attacks while supporting files that don't exist yet.
 
@@ -383,7 +383,7 @@ path-jail crosses the Python/Rust boundary once per call. The tight syscall loop
 ## Development
 
 ```bash
-git clone https://github.com/aimable100/path-jail-python.git
+git clone https://github.com/tenuo-ai/path-jail-python.git
 cd path-jail-python
 pip install maturin pytest ruff mypy
 maturin develop
