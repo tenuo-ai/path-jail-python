@@ -49,20 +49,34 @@ fn normalize_path(path: PathBuf) -> PathBuf {
 }
 
 /// Extract a path from a Python object (str or os.PathLike).
+///
+/// Rejects paths containing null bytes. While Python's open() would also reject them,
+/// we catch it early to provide a clear error and prevent any downstream issues
+/// with C libraries that might truncate at the null byte.
 fn extract_path(obj: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
+    // Helper to validate and convert string to PathBuf
+    fn validate_path(s: &str) -> PyResult<PathBuf> {
+        if s.contains('\0') {
+            return Err(PyValueError::new_err(
+                "path contains null byte (security risk)",
+            ));
+        }
+        Ok(PathBuf::from(s))
+    }
+
     // Try str first
     if let Ok(s) = obj.downcast::<PyString>() {
-        return Ok(PathBuf::from(s.to_str()?));
+        return validate_path(s.to_str()?);
     }
 
     // Try os.PathLike via __fspath__
     if let Ok(fspath) = obj.call_method0("__fspath__") {
         if let Ok(s) = fspath.downcast::<PyString>() {
-            return Ok(PathBuf::from(s.to_str()?));
+            return validate_path(s.to_str()?);
         }
         // Could be bytes, but we only support str paths
         if let Ok(s) = fspath.extract::<String>() {
-            return Ok(PathBuf::from(s));
+            return validate_path(&s);
         }
     }
 
