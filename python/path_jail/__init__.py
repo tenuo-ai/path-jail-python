@@ -2,4 +2,6 @@
 from .path_jail import Jail, join
 
 __all__ = ["Jail", "join"]
-__version__ = "0.1.0"
+from importlib.metadata import version as _version
+
+__version__ = _version("path-jail")

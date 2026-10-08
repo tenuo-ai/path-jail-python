@@ -104,6 +104,8 @@ fn to_py_err(err: JailError) -> PyErr {
         JailError::InvalidPath(reason) => {
             PyValueError::new_err(format!("invalid path: {}", reason))
         }
+        // Filesystem root or non-directory. (A missing root surfaces as Io.)
+        err @ JailError::InvalidRoot { .. } => PyValueError::new_err(err.to_string()),
         JailError::Io(err) => PyIOError::new_err(err.to_string()),
         // Handle future error variants from path_jail crate
         _ => PyValueError::new_err(format!("path_jail error: {}", err)),
@@ -129,7 +131,8 @@ impl Jail {
     ///     root: Path to the jail root directory (must exist)
     ///
     /// Raises:
-    ///     IOError: If root does not exist or is not a directory
+    ///     ValueError: If root is a filesystem root or not a directory
+    ///     OSError: If root does not exist or cannot be read
     #[new]
     fn new(root: &Bound<'_, PyAny>) -> PyResult<Self> {
         let path = extract_path(root)?;
@@ -153,6 +156,8 @@ impl Jail {
     ///
     /// Raises:
     ///     ValueError: If path would escape the jail or is absolute
+    ///     OSError: If an existing path component cannot be inspected
+    ///         (e.g. permission denied)
     fn join(&self, path: &Bound<'_, PyAny>) -> PyResult<String> {
         let path = extract_path(path)?;
         self.inner
@@ -227,8 +232,8 @@ impl Jail {
 ///     Absolute path inside the jail
 ///
 /// Raises:
-///     ValueError: If path would escape the jail
-///     IOError: If root does not exist
+///     ValueError: If path would escape the jail, or root is not a directory
+///     OSError: If root does not exist, or a path component cannot be inspected
 ///
 /// Example:
 ///     >>> from path_jail import join

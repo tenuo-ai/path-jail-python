@@ -29,8 +29,8 @@ path1 = jail.join("2025/report.pdf")
 path2 = jail.join("data.csv")
 
 # These raise ValueError:
-jail.join("../../etc/passwd")      # Path traversal
-jail.join("/etc/passwd")           # Absolute path
+jail.join("../../etc/passwd")  # Path traversal
+jail.join("/etc/passwd")  # Absolute path
 ```
 
 ## Why path-jail?
@@ -132,6 +132,10 @@ try:
 except ValueError as e:
     # Path escapes jail, broken symlink, or invalid path
     print(f"Rejected: {e}")
+except OSError as e:
+    # An existing component couldn't be inspected (e.g. permission denied).
+    # Fail closed: treat it as a rejection, not as a missing file.
+    print(f"Cannot verify: {e}")
 except TypeError as e:
     # Invalid type (not str or PathLike)
     print(f"Bad input: {e}")
@@ -141,9 +145,12 @@ Creating a jail can also fail:
 
 ```python
 try:
-    jail = Jail("/nonexistent")
+    jail = Jail("/var/uploads")
 except OSError as e:
-    # Root doesn't exist or isn't a directory
+    # Root doesn't exist or can't be read
+    print(f"Invalid root: {e}")
+except ValueError as e:
+    # Root is a file, or a filesystem root like "/"
     print(f"Invalid root: {e}")
 ```
 
@@ -156,17 +163,18 @@ from path_jail import Jail
 UPLOAD_DIR = "/var/uploads"
 jail = Jail(UPLOAD_DIR)
 
+
 def save_upload(user_id: str, filename: str, data: bytes) -> str:
     """Safely save an uploaded file."""
     # Validate and build path
     safe_path = jail.join(f"{user_id}/{filename}")
-    
+
     # Create parent directories
     Path(safe_path).parent.mkdir(parents=True, exist_ok=True)
-    
+
     # Write file
     Path(safe_path).write_bytes(data)
-    
+
     # Return relative path for database storage
     return jail.relative(safe_path)
 ```
@@ -176,11 +184,14 @@ def save_upload(user_id: str, filename: str, data: bytes) -> str:
 ### FastAPI
 
 ```python
-from fastapi import FastAPI, UploadFile, HTTPException
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, UploadFile
 from path_jail import Jail
 
 app = FastAPI()
 uploads = Jail("/var/uploads")
+
 
 @app.post("/upload/{filename:path}")
 async def upload(filename: str, file: UploadFile):
@@ -188,7 +199,7 @@ async def upload(filename: str, file: UploadFile):
         safe_path = uploads.join(filename)
     except ValueError:
         raise HTTPException(400, "Invalid filename")
-    
+
     Path(safe_path).parent.mkdir(parents=True, exist_ok=True)
     Path(safe_path).write_bytes(await file.read())
     return {"path": filename}
@@ -204,13 +215,14 @@ from path_jail import Jail
 app = Flask(__name__)
 uploads = Jail("/var/uploads")
 
+
 @app.route("/upload/<path:filename>", methods=["POST"])
 def upload(filename):
     try:
         safe_path = uploads.join(filename)
     except ValueError:
         abort(400, "Invalid filename")
-    
+
     Path(safe_path).parent.mkdir(parents=True, exist_ok=True)
     request.files["file"].save(safe_path)
     return {"path": filename}
@@ -226,12 +238,13 @@ from path_jail import Jail
 
 uploads = Jail(settings.MEDIA_ROOT)
 
+
 def upload(request, filename):
     try:
         safe_path = uploads.join(filename)
     except ValueError:
         return HttpResponseBadRequest("Invalid filename")
-    
+
     Path(safe_path).parent.mkdir(parents=True, exist_ok=True)
     with open(safe_path, "wb") as f:
         for chunk in request.FILES["file"].chunks():
@@ -274,12 +287,20 @@ path-jail validates paths at call time. A symlink could be created between valid
 ```python
 safe_path = jail.join("file.txt")  # Validated
 # Attacker creates symlink here
-open(safe_path)                     # Escapes!
+open(safe_path)  # Escapes!
 ```
 
 **Mitigations:**
-- Use `O_NOFOLLOW` when opening files
+- Open with `O_NOFOLLOW` so a symlink swapped in at the final component is
+  refused (intermediate directories are still unprotected):
+  ```python
+  fd = os.open(safe_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+  with os.fdopen(fd, "wb") as f:
+      f.write(data)
+  ```
 - Use container/chroot isolation for strong guarantees
+- The Rust crate's `guard` feature makes validate-and-open a single
+  kernel-checked step on Linux 5.6+; it is not exposed in these bindings yet.
 
 #### Windows Reserved Device Names
 
@@ -287,8 +308,8 @@ On Windows, filenames like `CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LP
 
 ```python
 # If an attacker uploads "CON.txt":
-safe_path = jail.join("CON.txt")   # Returns "C:\uploads\CON.txt"
-open(safe_path)                     # Opens console device, not file!
+safe_path = jail.join("CON.txt")  # Returns "C:\uploads\CON.txt"
+open(safe_path)  # Opens console device, not file!
 ```
 
 **Impact:** Denial of Service (thread hangs or data vanishes). Not a filesystem escape.
@@ -323,8 +344,8 @@ jail.join("SECRET.TXT")  # Not in blocklist, but same file!
 Windows silently strips trailing dots and spaces from filenames:
 
 ```python
-jail.join("file.txt.")   # Becomes "file.txt"
-jail.join("file.txt ")   # Becomes "file.txt"
+jail.join("file.txt.")  # Becomes "file.txt"
+jail.join("file.txt ")  # Becomes "file.txt"
 
 # Could bypass extension checks:
 if not filename.endswith(".exe"):
@@ -374,6 +395,7 @@ When comparing paths, always canonicalize your expected values:
 
 ```python
 import os
+
 assert result == os.path.realpath("/var/uploads/file.txt")
 ```
 

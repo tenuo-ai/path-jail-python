@@ -385,3 +385,38 @@ class TestSecurityEdgeCases:
         jail = Jail(jail_dir)
         result = jail.join("subdir/")
         assert normalize_path(result).startswith(normalize_path(jail.root))
+
+
+class TestCoreBehavior:
+    """Behavior that comes from the path_jail 0.5 core."""
+
+    def test_non_directory_root_is_value_error(self, jail_dir):
+        file_root = os.path.join(jail_dir, "file.txt")
+        with open(file_root, "w"):
+            pass
+        with pytest.raises(ValueError, match="not a directory"):
+            Jail(file_root)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions")
+    @pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses permissions"
+    )
+    def test_unreadable_component_fails_closed(self, jail_dir):
+        locked = os.path.join(jail_dir, "locked")
+        os.mkdir(locked)
+        os.chmod(locked, 0)
+        try:
+            jail = Jail(jail_dir)
+            # 0.2 treated the unreadable component as nonexistent and returned
+            # a path; 0.5 reports the I/O error instead.
+            with pytest.raises(OSError):
+                jail.join("locked/file.txt")
+        finally:
+            os.chmod(locked, 0o700)
+
+    def test_version_matches_metadata(self):
+        from importlib.metadata import version
+
+        import path_jail
+
+        assert path_jail.__version__ == version("path-jail")

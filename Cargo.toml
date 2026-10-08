@@ -1,18 +1,18 @@
 [package]
 name = "path_jail_py"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Python bindings for path_jail - secure filesystem sandbox"
 repository = "https://github.com/tenuo-ai/path-jail-python"
-homepage = "https://tenuo.dev"
+homepage = "https://tenuo.ai"
 [lib]
 name = "path_jail"
 crate-type = ["cdylib"]
 
 [dependencies]
-path_jail = "0.2"
+path_jail = "0.5"
 pyo3 = { version = "0.24", features = ["extension-module", "abi3-py39"] }
 
 [package.metadata]
-authors = ["Niki A. <dev@tenuo.dev>"]
+authors = ["Niki A. <dev@tenuo.ai>"]
