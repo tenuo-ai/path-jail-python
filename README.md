@@ -294,13 +294,16 @@ open(safe_path)  # Escapes!
 - Open with `O_NOFOLLOW` so a symlink swapped in at the final component is
   refused (intermediate directories are still unprotected):
   ```python
+  import os
+
   fd = os.open(safe_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
   with os.fdopen(fd, "wb") as f:
       f.write(data)
   ```
 - Use container/chroot isolation for strong guarantees
 - The Rust crate's `guard` feature makes validate-and-open a single
-  kernel-checked step on Linux 5.6+; it is not exposed in these bindings yet.
+  kernel-checked step on Linux x86_64/aarch64 with kernel 5.6+; it is not
+  exposed in these bindings yet.
 
 #### Windows Reserved Device Names
 

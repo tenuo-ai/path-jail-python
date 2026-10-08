@@ -46,8 +46,9 @@ class TestJail:
         assert paths_equal(jail.root, os.path.realpath(jail_dir))
 
     def test_create_jail_nonexistent(self):
-        with pytest.raises(OSError):
+        with pytest.raises(FileNotFoundError) as exc_info:
             Jail("/nonexistent/path")
+        assert exc_info.value.errno is not None
 
     def test_join_simple(self, jail_dir):
         jail = Jail(jail_dir)
@@ -99,6 +100,12 @@ class TestJail:
         with pytest.raises(ValueError, match="escapes"):
             jail.contains(outside_path)
 
+    def test_contains_missing_path_is_os_error(self, jail_dir):
+        jail = Jail(jail_dir)
+        missing = os.path.join(jail_dir, "missing.txt")
+        with pytest.raises(FileNotFoundError):
+            jail.contains(missing)
+
     def test_relative(self, jail_dir):
         jail = Jail(jail_dir)
         test_file = os.path.join(jail_dir, "subdir", "file.txt")
@@ -108,6 +115,12 @@ class TestJail:
         result = jail.relative(test_file)
         # On Windows, path separator might differ
         assert normalize_path(result) == os.path.join("subdir", "file.txt")
+
+    def test_relative_missing_path_is_os_error(self, jail_dir):
+        jail = Jail(jail_dir)
+        missing = os.path.join(jail_dir, "missing.txt")
+        with pytest.raises(FileNotFoundError):
+            jail.relative(missing)
 
     def test_repr(self, jail_dir):
         jail = Jail(jail_dir)
@@ -323,7 +336,7 @@ class TestSecurityEdgeCases:
                 result = jail.join(special)
                 # If it works, verify it's inside the jail
                 assert normalize_path(result).startswith(normalize_path(jail.root))
-            except ValueError:
+            except (ValueError, OSError):
                 pass  # Also acceptable to reject
 
     def test_backslash_on_unix(self, jail_dir):
@@ -409,7 +422,7 @@ class TestCoreBehavior:
             jail = Jail(jail_dir)
             # 0.2 treated the unreadable component as nonexistent and returned
             # a path; 0.5 reports the I/O error instead.
-            with pytest.raises(OSError):
+            with pytest.raises(PermissionError):
                 jail.join("locked/file.txt")
         finally:
             os.chmod(locked, 0o700)

@@ -1,7 +1,7 @@
 #![allow(clippy::useless_conversion)]
 
 use ::path_jail::{Jail as RustJail, JailError};
-use pyo3::exceptions::{PyIOError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyOSError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyString;
 use std::path::PathBuf;
@@ -89,6 +89,18 @@ fn extract_path(obj: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
     Err(PyTypeError::new_err("expected str or os.PathLike object"))
 }
 
+/// Convert an OS error without discarding its numeric error code.
+fn io_error_to_py(err: std::io::Error) -> PyErr {
+    let message = err.to_string();
+    match err.raw_os_error() {
+        #[cfg(windows)]
+        Some(code) => PyOSError::new_err((0, message, Option::<String>::None, code)),
+        #[cfg(not(windows))]
+        Some(code) => PyOSError::new_err((code, message)),
+        None => err.into(),
+    }
+}
+
 /// Convert JailError to Python exception
 fn to_py_err(err: JailError) -> PyErr {
     match err {
@@ -106,7 +118,7 @@ fn to_py_err(err: JailError) -> PyErr {
         }
         // Filesystem root or non-directory. (A missing root surfaces as Io.)
         err @ JailError::InvalidRoot { .. } => PyValueError::new_err(err.to_string()),
-        JailError::Io(err) => PyIOError::new_err(err.to_string()),
+        JailError::Io(err) => io_error_to_py(err),
         // Handle future error variants from path_jail crate
         _ => PyValueError::new_err(format!("path_jail error: {}", err)),
     }
@@ -177,6 +189,7 @@ impl Jail {
     ///
     /// Raises:
     ///     ValueError: If path is outside the jail or not absolute
+    ///     OSError: If the path cannot be inspected
     fn contains(&self, path: &Bound<'_, PyAny>) -> PyResult<String> {
         let path = extract_path(path)?;
         self.inner
@@ -196,6 +209,7 @@ impl Jail {
     ///
     /// Raises:
     ///     ValueError: If path is outside the jail
+    ///     OSError: If the path cannot be inspected
     fn relative(&self, path: &Bound<'_, PyAny>) -> PyResult<String> {
         let path = extract_path(path)?;
         self.inner

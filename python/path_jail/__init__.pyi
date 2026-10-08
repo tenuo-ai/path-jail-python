@@ -68,6 +68,7 @@ class Jail:
 
         Raises:
             ValueError: If path is outside the jail or not absolute
+            OSError: If the path cannot be inspected
         """
         ...
 
@@ -82,6 +83,7 @@ class Jail:
 
         Raises:
             ValueError: If path is outside the jail
+            OSError: If the path cannot be inspected
         """
         ...
 
