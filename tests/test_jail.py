@@ -46,8 +46,9 @@ class TestJail:
         assert paths_equal(jail.root, os.path.realpath(jail_dir))
 
     def test_create_jail_nonexistent(self):
-        with pytest.raises(OSError):
+        with pytest.raises(FileNotFoundError) as exc_info:
             Jail("/nonexistent/path")
+        assert exc_info.value.errno is not None
 
     def test_join_simple(self, jail_dir):
         jail = Jail(jail_dir)
@@ -99,6 +100,12 @@ class TestJail:
         with pytest.raises(ValueError, match="escapes"):
             jail.contains(outside_path)
 
+    def test_contains_missing_path_is_os_error(self, jail_dir):
+        jail = Jail(jail_dir)
+        missing = os.path.join(jail_dir, "missing.txt")
+        with pytest.raises(FileNotFoundError):
+            jail.contains(missing)
+
     def test_relative(self, jail_dir):
         jail = Jail(jail_dir)
         test_file = os.path.join(jail_dir, "subdir", "file.txt")
@@ -108,6 +115,12 @@ class TestJail:
         result = jail.relative(test_file)
         # On Windows, path separator might differ
         assert normalize_path(result) == os.path.join("subdir", "file.txt")
+
+    def test_relative_missing_path_is_os_error(self, jail_dir):
+        jail = Jail(jail_dir)
+        missing = os.path.join(jail_dir, "missing.txt")
+        with pytest.raises(FileNotFoundError):
+            jail.relative(missing)
 
     def test_repr(self, jail_dir):
         jail = Jail(jail_dir)
@@ -323,7 +336,7 @@ class TestSecurityEdgeCases:
                 result = jail.join(special)
                 # If it works, verify it's inside the jail
                 assert normalize_path(result).startswith(normalize_path(jail.root))
-            except ValueError:
+            except (ValueError, OSError):
                 pass  # Also acceptable to reject
 
     def test_backslash_on_unix(self, jail_dir):
@@ -385,3 +398,38 @@ class TestSecurityEdgeCases:
         jail = Jail(jail_dir)
         result = jail.join("subdir/")
         assert normalize_path(result).startswith(normalize_path(jail.root))
+
+
+class TestCoreBehavior:
+    """Behavior that comes from the path_jail 0.5 core."""
+
+    def test_non_directory_root_is_value_error(self, jail_dir):
+        file_root = os.path.join(jail_dir, "file.txt")
+        with open(file_root, "w"):
+            pass
+        with pytest.raises(ValueError, match="not a directory"):
+            Jail(file_root)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions")
+    @pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses permissions"
+    )
+    def test_unreadable_component_fails_closed(self, jail_dir):
+        locked = os.path.join(jail_dir, "locked")
+        os.mkdir(locked)
+        os.chmod(locked, 0)
+        try:
+            jail = Jail(jail_dir)
+            # 0.2 treated the unreadable component as nonexistent and returned
+            # a path; 0.5 reports the I/O error instead.
+            with pytest.raises(PermissionError):
+                jail.join("locked/file.txt")
+        finally:
+            os.chmod(locked, 0o700)
+
+    def test_version_matches_metadata(self):
+        from importlib.metadata import version
+
+        import path_jail
+
+        assert path_jail.__version__ == version("path-jail")

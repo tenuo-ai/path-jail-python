@@ -25,7 +25,8 @@ class Jail:
             root: Path to the jail root directory (must exist)
 
         Raises:
-            OSError: If root does not exist or is not a directory
+            ValueError: If root is a filesystem root or not a directory
+            OSError: If root does not exist or cannot be read
         """
         ...
 
@@ -50,6 +51,8 @@ class Jail:
 
         Raises:
             ValueError: If path would escape the jail or is absolute
+            OSError: If an existing path component cannot be inspected
+                (e.g. permission denied)
         """
         ...
 
@@ -65,6 +68,7 @@ class Jail:
 
         Raises:
             ValueError: If path is outside the jail or not absolute
+            OSError: If the path cannot be inspected
         """
         ...
 
@@ -79,6 +83,7 @@ class Jail:
 
         Raises:
             ValueError: If path is outside the jail
+            OSError: If the path cannot be inspected
         """
         ...
 
@@ -100,8 +105,8 @@ def join(root: _PathLike, path: _PathLike) -> str:
         prefix for paths exceeding 250 characters.
 
     Raises:
-        ValueError: If path would escape the jail
-        OSError: If root does not exist
+        ValueError: If path would escape the jail, or root is not a directory
+        OSError: If root does not exist, or a path component cannot be inspected
 
     Note:
         On Windows, returns standard paths (e.g. ``C:\\...``) when possible.
