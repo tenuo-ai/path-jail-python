@@ -518,6 +518,21 @@ class TestFdJail:
         assert len(os.listdir("/dev/fd")) <= before
 
     @pytest.mark.skipif(sys.platform == "win32", reason="FdJail is Unix-only")
+    def test_directory_wrapper_failure_closes_descriptor_once(self, jail_dir):
+        Path(jail_dir, "directory").mkdir()
+        jail = FdJail(jail_dir)
+        before = len(os.listdir("/dev/fd"))
+
+        for _ in range(20):
+            with pytest.raises(IsADirectoryError):
+                jail.open("directory", "rb")
+            with pytest.raises(IsADirectoryError):
+                jail.open_with_attestation("directory", "rb")
+
+        gc.collect()
+        assert len(os.listdir("/dev/fd")) <= before
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="FdJail is Unix-only")
     def test_blocking_open_releases_gil(self, jail_dir):
         script = """
 import os

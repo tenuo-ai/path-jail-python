@@ -11,7 +11,7 @@ use pyo3::types::{PyString, PyTuple};
 #[cfg(unix)]
 use std::fs::File;
 #[cfg(unix)]
-use std::os::fd::IntoRawFd;
+use std::os::fd::{AsRawFd, IntoRawFd};
 use std::path::PathBuf;
 
 /// Maximum path length before we keep the \\?\ prefix on Windows.
@@ -450,10 +450,14 @@ fn file_to_python(
     kwargs.set_item("closefd", true)?;
 
     let raw_mode = format!("{}b{}", mode.base, if mode.update { "+" } else { "" });
-    let raw_fd = file.into_raw_fd();
-    // FileIO is the single ownership handoff. If a buffered or text wrapper
-    // fails, dropping `raw` closes the descriptor exactly once.
+    let raw_fd = file.as_raw_fd();
+    // Rust retains ownership until FileIO initializes successfully. FileIO
+    // does not adopt an existing descriptor when initialization fails (for
+    // example, for a directory), so `file` closes that failure path. After a
+    // successful call, forgetting the Rust File leaves FileIO as sole owner.
     let raw = file_io.call((raw_fd, raw_mode), Some(&kwargs))?;
+    let _ = file.into_raw_fd();
+    // If a buffered or text wrapper fails, dropping `raw` closes exactly once.
     let buffered = buffered_type.call1((raw,))?;
     match text_io_wrapper {
         Some(wrapper) => {
