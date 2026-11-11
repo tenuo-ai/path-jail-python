@@ -18,7 +18,7 @@ pip install path-jail
 ## Quick Start
 
 ```python
-from path_jail import Jail, join
+from path_jail import FdJail, Jail, join
 
 # One-shot validation
 safe_path = join("/var/uploads", "user/report.pdf")
@@ -27,6 +27,14 @@ safe_path = join("/var/uploads", "user/report.pdf")
 jail = Jail("/var/uploads")
 path1 = jail.join("2025/report.pdf")
 path2 = jail.join("data.csv")
+
+# Validate independent path components without string concatenation
+path3 = jail.join_segments("users", user_id, filename)
+
+# Open untrusted paths through a pinned directory descriptor (Unix)
+guard = FdJail("/var/uploads")
+with guard.open("user/report.pdf", "rb", require_regular_file=True) as file:
+    contents = file.read()
 
 # These raise ValueError:
 jail.join("../../etc/passwd")  # Path traversal
@@ -81,6 +89,54 @@ Join a relative path to the jail root. Returns the absolute path.
 ```python
 safe = jail.join("subdir/file.txt")
 ```
+
+### `Jail.join_segments(*parts) -> str`
+
+Join separately validated path components. Empty components are skipped;
+separators, `..`, and null bytes are rejected in every non-empty component.
+
+```python
+safe = jail.join_segments("users", user_id, filename)
+```
+
+### `FdJail(root)`
+
+On Unix, `FdJail` opens files relative to a pinned jail root and returns normal
+Python file objects. Linux 5.6+ on x86_64 and aarch64 uses `openat2` for atomic,
+kernel-enforced resolution. macOS and other Unix platforms use an `O_NOFOLLOW`
+fallback; check `capabilities().toctou_safe` when atomicity is required.
+
+```python
+from path_jail import FdJail
+
+guard = FdJail("/var/uploads")
+
+with guard.open(
+    "user/report.pdf",
+    "rb",
+    require_regular_file=True,
+    reject_hard_links=True,
+) as file:
+    contents = file.read()
+
+with guard.create("user/new.bin") as file:
+    file.write(b"new content")
+
+file, attestation = guard.open_with_attestation("user/report.pdf", "rb")
+with file:
+    contents = file.read()
+print(attestation.toctou_safe, attestation.file_inode)
+```
+
+`open()` supports standard `r`, `w`, `a`, and `x` modes with optional `b`, `t`,
+and `+`. Policy options are `require_regular_file`, `reject_hard_links`,
+`no_symlinks`, and `no_xdev`. The latter two require a backend whose matching
+capability is true.
+
+Guarded `create_dir`, `remove_file`, `remove_dir`, and `rename` are available
+when `capabilities().directory_operations` is true. Unsupported guarded
+operations raise `NotImplementedError`. `FdJail` itself is unavailable on
+Windows and its constructor raises `NotImplementedError` there.
 
 ### `Jail.contains(path) -> str`
 
@@ -167,7 +223,7 @@ jail = Jail(UPLOAD_DIR)
 def save_upload(user_id: str, filename: str, data: bytes) -> str:
     """Safely save an uploaded file."""
     # Validate and build path
-    safe_path = jail.join(f"{user_id}/{filename}")
+    safe_path = jail.join_segments(user_id, filename)
 
     # Create parent directories
     Path(safe_path).parent.mkdir(parents=True, exist_ok=True)
@@ -276,6 +332,7 @@ ln /etc/passwd /var/uploads/innocent.txt
 ```
 
 **Mitigations:**
+- Use `FdJail.open(..., reject_hard_links=True)` for untrusted files
 - Use a separate partition for the jail (hard links cannot cross partitions)
 - Don't give untrusted users shell access
 - Use container isolation
@@ -291,19 +348,13 @@ open(safe_path)  # Escapes!
 ```
 
 **Mitigations:**
-- Open with `O_NOFOLLOW` so a symlink swapped in at the final component is
-  refused (intermediate directories are still unprotected):
-  ```python
-  import os
-
-  fd = os.open(safe_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
-  with os.fdopen(fd, "wb") as f:
-      f.write(data)
-  ```
-- Use container/chroot isolation for strong guarantees
-- The Rust crate's `guard` feature makes validate-and-open a single
-  kernel-checked step on Linux x86_64/aarch64 with kernel 5.6+; it is not
-  exposed in these bindings yet.
+- Use `FdJail.open()` so validation and opening are performed by the guarded
+  backend. On Linux 5.6+ x86_64/aarch64 this is a single kernel-checked step.
+- Check `FdJail.capabilities().toctou_safe` or the returned attestation before
+  relying on atomic path resolution. Other Unix platforms use a fallback that
+  protects the final component but is not fully TOCTOU-safe.
+- Use container/chroot isolation when the active backend does not meet the
+  threat model.
 
 #### Windows Reserved Device Names
 
@@ -408,7 +459,8 @@ path-jail crosses the Python/Rust boundary once per call. The tight syscall loop
 
 ## Thread Safety
 
-`Jail` instances are thread-safe and can be shared across threads without locks.
+`Jail` and `FdJail` instances are thread-safe and can be shared across threads
+without locks.
 
 ## Development
 

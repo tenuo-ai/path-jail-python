@@ -1,6 +1,7 @@
 """Type stubs for path_jail."""
 
 from os import PathLike
+from typing import IO, Any, BinaryIO
 
 __version__: str
 
@@ -56,6 +57,13 @@ class Jail:
         """
         ...
 
+    def join_segments(self, *parts: _PathLike) -> str:
+        """Join separately validated path components beneath the jail root.
+
+        Empty parts are skipped. Separators, ``..``, and null bytes are rejected.
+        """
+        ...
+
     def contains(self, path: _PathLike) -> str:
         """Verify an absolute path is inside the jail.
 
@@ -89,6 +97,82 @@ class Jail:
 
     def __repr__(self) -> str: ...
     def __str__(self) -> str: ...
+
+class GuardCapabilities:
+    """Guarantees and operations provided by the active guarded backend."""
+
+    @property
+    def toctou_safe(self) -> bool: ...
+    @property
+    def directory_operations(self) -> bool: ...
+    @property
+    def no_symlinks(self) -> bool: ...
+    @property
+    def no_xdev(self) -> bool: ...
+
+class Attestation:
+    """Metadata captured from the exact handle returned by a guarded open."""
+
+    @property
+    def jail_root(self) -> str: ...
+    @property
+    def opened_path(self) -> str: ...
+    @property
+    def root_inode(self) -> int: ...
+    @property
+    def file_inode(self) -> int: ...
+    @property
+    def device(self) -> int: ...
+    @property
+    def nlink(self) -> int: ...
+    @property
+    def toctou_safe(self) -> bool: ...
+    @property
+    def opened_at_ns(self) -> int: ...
+    @property
+    def signature(self) -> bytes | None: ...
+
+class FdJail:
+    """Descriptor-based jail for guarded file operations on Unix."""
+
+    def __init__(self, root: _PathLike) -> None: ...
+    @property
+    def root(self) -> str: ...
+    def capabilities(self) -> GuardCapabilities: ...
+    def open(
+        self,
+        path: _PathLike,
+        mode: str = "r",
+        *,
+        require_regular_file: bool = False,
+        reject_hard_links: bool = False,
+        no_symlinks: bool = False,
+        no_xdev: bool = False,
+    ) -> IO[Any]: ...
+    def open_with_attestation(
+        self,
+        path: _PathLike,
+        mode: str = "r",
+        *,
+        require_regular_file: bool = False,
+        reject_hard_links: bool = False,
+        no_symlinks: bool = False,
+        no_xdev: bool = False,
+    ) -> tuple[IO[Any], Attestation]: ...
+    def create(
+        self,
+        path: _PathLike,
+        *,
+        require_regular_file: bool = False,
+        reject_hard_links: bool = False,
+        no_symlinks: bool = False,
+        no_xdev: bool = False,
+    ) -> BinaryIO: ...
+    def create_dir(self, path: _PathLike) -> None: ...
+    def remove_file(self, path: _PathLike) -> None: ...
+    def remove_dir(self, path: _PathLike) -> None: ...
+    def rename(self, source: _PathLike, destination: _PathLike) -> None: ...
+    def __repr__(self) -> str: ...
 
 def join(root: _PathLike, path: _PathLike) -> str:
     """One-shot path validation.

@@ -1,6 +1,6 @@
 [package]
 name = "path_jail_py"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Python bindings for path_jail - secure filesystem sandbox"
@@ -11,8 +11,8 @@ name = "path_jail"
 crate-type = ["cdylib"]
 
 [dependencies]
-path_jail = "0.5"
-pyo3 = { version = "0.24", features = ["extension-module", "abi3-py39"] }
+path_jail = { version = "0.6", features = ["guard"] }
+pyo3 = { version = "0.30", features = ["extension-module", "abi3-py39"] }
 
 [package.metadata]
 authors = ["Niki A. <dev@tenuo.ai>"]

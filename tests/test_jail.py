@@ -1,10 +1,11 @@
 import os
 import sys
 import tempfile
+from io import IOBase
 from pathlib import Path
 
 import pytest
-from path_jail import Jail, join
+from path_jail import FdJail, Jail, join
 
 # Windows extended-length path prefix
 WIN_PREFIX = "\\\\?\\"
@@ -64,6 +65,25 @@ class TestJail:
         jail = Jail(jail_dir)
         result = jail.join(Path("subdir") / "file.txt")
         assert paths_equal(result, os.path.join(normalize_path(jail.root), "subdir", "file.txt"))
+
+    def test_join_segments(self, jail_dir):
+        jail = Jail(jail_dir)
+        result = jail.join_segments("users", "alice", "report.pdf")
+        expected = os.path.join(normalize_path(jail.root), "users", "alice", "report.pdf")
+        assert paths_equal(result, expected)
+
+    def test_join_segments_accepts_pathlike_and_skips_empty(self, jail_dir):
+        jail = Jail(jail_dir)
+        assert paths_equal(
+            jail.join_segments(Path("users"), "", "report.pdf"),
+            jail.join_segments("users", "report.pdf"),
+        )
+
+    @pytest.mark.parametrize("part", ["..", "users/alice", "users\\alice", "bad\x00name"])
+    def test_join_segments_rejects_invalid_component(self, jail_dir, part):
+        jail = Jail(jail_dir)
+        with pytest.raises(ValueError):
+            jail.join_segments("safe", part)
 
     def test_join_blocks_traversal(self, jail_dir):
         jail = Jail(jail_dir)
@@ -401,7 +421,7 @@ class TestSecurityEdgeCases:
 
 
 class TestCoreBehavior:
-    """Behavior that comes from the path_jail 0.5 core."""
+    """Behavior that comes from the path_jail 0.6 core."""
 
     def test_non_directory_root_is_value_error(self, jail_dir):
         file_root = os.path.join(jail_dir, "file.txt")
@@ -433,3 +453,123 @@ class TestCoreBehavior:
         import path_jail
 
         assert path_jail.__version__ == version("path-jail")
+
+
+class TestFdJail:
+    def test_windows_reports_unsupported(self, jail_dir):
+        if sys.platform != "win32":
+            pytest.skip("Windows-only behavior")
+        with pytest.raises(NotImplementedError, match="Unix"):
+            FdJail(jail_dir)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="FdJail is Unix-only")
+    def test_open_returns_normal_python_file(self, jail_dir):
+        Path(jail_dir, "message.txt").write_text("hello", encoding="utf-8")
+        jail = FdJail(jail_dir)
+
+        with jail.open("message.txt") as file:
+            assert isinstance(file, IOBase)
+            assert file.read() == "hello"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="FdJail is Unix-only")
+    def test_binary_create_and_open(self, jail_dir):
+        jail = FdJail(jail_dir)
+        with jail.create("created.bin") as file:
+            file.write(b"created")
+        with jail.open("created.bin", "rb", require_regular_file=True) as file:
+            assert file.read() == b"created"
+        with pytest.raises(FileExistsError):
+            jail.create("created.bin")
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="FdJail is Unix-only")
+    def test_write_append_and_update_modes(self, jail_dir):
+        jail = FdJail(jail_dir)
+        with jail.open("value.txt", "w") as file:
+            file.write("one")
+        with jail.open("value.txt", "a") as file:
+            file.write(" two")
+        with jail.open("value.txt", "r+") as file:
+            assert file.read() == "one two"
+            file.seek(0)
+            file.write("ONE")
+        assert Path(jail_dir, "value.txt").read_text(encoding="utf-8") == "ONE two"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="FdJail is Unix-only")
+    @pytest.mark.parametrize("mode", ["", "rr", "rw", "rbb", "rbt", "q"])
+    def test_invalid_mode_is_rejected(self, jail_dir, mode):
+        jail = FdJail(jail_dir)
+        with pytest.raises(ValueError, match="invalid file mode"):
+            jail.open("value.txt", mode)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="FdJail is Unix-only")
+    def test_open_with_attestation(self, jail_dir):
+        Path(jail_dir, "report.txt").write_text("report", encoding="utf-8")
+        jail = FdJail(jail_dir)
+
+        file, attestation = jail.open_with_attestation(
+            "report.txt", "rb", require_regular_file=True
+        )
+        with file:
+            assert file.read() == b"report"
+        assert attestation.opened_path == "report.txt"
+        assert attestation.file_inode > 0
+        assert attestation.root_inode > 0
+        assert attestation.nlink >= 1
+        assert attestation.signature is None
+        assert attestation.toctou_safe == jail.capabilities().toctou_safe
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="FdJail is Unix-only")
+    def test_require_regular_file_rejects_directory(self, jail_dir):
+        Path(jail_dir, "directory").mkdir()
+        jail = FdJail(jail_dir)
+        with pytest.raises(ValueError, match="regular"):
+            jail.open("directory", "rb", require_regular_file=True)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="FdJail is Unix-only")
+    def test_reject_hard_links(self, jail_dir):
+        original = Path(jail_dir, "original.txt")
+        original.write_text("linked", encoding="utf-8")
+        os.link(original, Path(jail_dir, "linked.txt"))
+        jail = FdJail(jail_dir)
+
+        with pytest.raises(ValueError, match="hard link"):
+            jail.open("linked.txt", "rb", reject_hard_links=True)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="FdJail is Unix-only")
+    def test_symlink_escape_is_rejected(self, jail_dir):
+        outside = tempfile.NamedTemporaryFile(delete=False)
+        try:
+            outside.write(b"secret")
+            outside.close()
+            os.symlink(outside.name, Path(jail_dir, "escape"))
+            jail = FdJail(jail_dir)
+            with pytest.raises(ValueError):
+                jail.open("escape", "rb")
+        finally:
+            outside.close()
+            os.unlink(outside.name)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="FdJail is Unix-only")
+    def test_capabilities_and_directory_mutations(self, jail_dir):
+        jail = FdJail(jail_dir)
+        capabilities = jail.capabilities()
+        assert capabilities.toctou_safe == capabilities.directory_operations
+        assert capabilities.no_symlinks == capabilities.toctou_safe
+        assert capabilities.no_xdev == capabilities.toctou_safe
+
+        if not capabilities.directory_operations:
+            with pytest.raises(NotImplementedError, match="no_symlinks"):
+                jail.open("missing", no_symlinks=True)
+            with pytest.raises(NotImplementedError, match="no_xdev"):
+                jail.open("missing", no_xdev=True)
+            with pytest.raises(NotImplementedError):
+                jail.create_dir("work")
+            return
+
+        jail.create_dir("work")
+        with jail.create("work/source.txt") as file:
+            file.write(b"data")
+        jail.rename("work/source.txt", "work/destination.txt")
+        jail.remove_file("work/destination.txt")
+        jail.remove_dir("work")
+        assert not Path(jail_dir, "work").exists()

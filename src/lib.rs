@@ -1,9 +1,17 @@
 #![allow(clippy::useless_conversion)]
 
+#[cfg(unix)]
+use ::path_jail::guard::{Attestation as RustAttestation, FdJail as RustFdJail, OpenOptions};
 use ::path_jail::{Jail as RustJail, JailError};
-use pyo3::exceptions::{PyOSError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyNotImplementedError, PyOSError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyString;
+#[cfg(unix)]
+use pyo3::types::PyDict;
+use pyo3::types::{PyString, PyTuple};
+#[cfg(unix)]
+use std::fs::File;
+#[cfg(unix)]
+use std::os::fd::{FromRawFd, IntoRawFd};
 use std::path::PathBuf;
 
 /// Maximum path length before we keep the \\?\ prefix on Windows.
@@ -71,13 +79,13 @@ fn extract_path(obj: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
     }
 
     // Try str first
-    if let Ok(s) = obj.downcast::<PyString>() {
+    if let Ok(s) = obj.cast::<PyString>() {
         return validate_path(&s.to_cow()?);
     }
 
     // Try os.PathLike via __fspath__
     if let Ok(fspath) = obj.call_method0("__fspath__") {
-        if let Ok(s) = fspath.downcast::<PyString>() {
+        if let Ok(s) = fspath.cast::<PyString>() {
             return validate_path(&s.to_cow()?);
         }
         // Could be bytes, but we only support str paths
@@ -87,6 +95,19 @@ fn extract_path(obj: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
     }
 
     Err(PyTypeError::new_err("expected str or os.PathLike object"))
+}
+
+/// Extract path segments as UTF-8 strings for `Jail::join_segments`.
+fn extract_segments(parts: &Bound<'_, PyTuple>) -> PyResult<Vec<String>> {
+    parts
+        .iter()
+        .map(|part| {
+            let path = extract_path(&part)?;
+            path.into_os_string()
+                .into_string()
+                .map_err(|_| PyValueError::new_err("path segment is not valid Unicode"))
+        })
+        .collect()
 }
 
 /// Convert an OS error without discarding its numeric error code.
@@ -118,6 +139,13 @@ fn to_py_err(err: JailError) -> PyErr {
         }
         // Filesystem root or non-directory. (A missing root surfaces as Io.)
         err @ JailError::InvalidRoot { .. } => PyValueError::new_err(err.to_string()),
+        #[cfg(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
+        err @ JailError::UnsupportedKernel { .. } => {
+            PyNotImplementedError::new_err(err.to_string())
+        }
         JailError::Io(err) => io_error_to_py(err),
         // Handle future error variants from path_jail crate
         _ => PyValueError::new_err(format!("path_jail error: {}", err)),
@@ -179,6 +207,20 @@ impl Jail {
             .map_err(to_py_err)
     }
 
+    /// Join separately supplied path components beneath the jail root.
+    ///
+    /// Each non-empty part must be one component. Separators, `..`, and null
+    /// bytes are rejected before the path is joined.
+    #[pyo3(signature = (*parts))]
+    fn join_segments(&self, parts: &Bound<'_, PyTuple>) -> PyResult<String> {
+        let parts = extract_segments(parts)?;
+        self.inner
+            .join_segments(&parts)
+            .map(normalize_path)
+            .map(path_to_string)
+            .map_err(to_py_err)
+    }
+
     /// Verify an absolute path is inside the jail.
     ///
     /// Args:
@@ -233,6 +275,410 @@ impl Jail {
     }
 }
 
+/// Guarantees and operations provided by the active guarded backend.
+#[pyclass(name = "GuardCapabilities", frozen)]
+#[derive(Clone)]
+struct PyGuardCapabilities {
+    #[pyo3(get)]
+    toctou_safe: bool,
+    #[pyo3(get)]
+    directory_operations: bool,
+    #[pyo3(get)]
+    no_symlinks: bool,
+    #[pyo3(get)]
+    no_xdev: bool,
+}
+
+/// Metadata captured from the exact file handle returned by a guarded open.
+#[pyclass(name = "Attestation", frozen)]
+#[derive(Clone)]
+struct PyAttestation {
+    #[pyo3(get)]
+    jail_root: String,
+    #[pyo3(get)]
+    opened_path: String,
+    #[pyo3(get)]
+    root_inode: u64,
+    #[pyo3(get)]
+    file_inode: u64,
+    #[pyo3(get)]
+    device: u64,
+    #[pyo3(get)]
+    nlink: u64,
+    #[pyo3(get)]
+    toctou_safe: bool,
+    #[pyo3(get)]
+    opened_at_ns: u64,
+    #[pyo3(get)]
+    signature: Option<Vec<u8>>,
+}
+
+#[cfg(unix)]
+impl From<&RustAttestation> for PyAttestation {
+    fn from(value: &RustAttestation) -> Self {
+        let opened_at_ns = value
+            .opened_at
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        Self {
+            jail_root: path_to_string(normalize_path(value.jail_root.clone())),
+            opened_path: path_to_string(value.opened_path.clone()),
+            root_inode: value.root_inode,
+            file_inode: value.file_inode,
+            device: value.device,
+            nlink: value.nlink,
+            toctou_safe: value.toctou_safe,
+            opened_at_ns,
+            signature: value.signature.map(|signature| signature.to_vec()),
+        }
+    }
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+struct ParsedMode {
+    read: bool,
+    write: bool,
+    append: bool,
+    truncate: bool,
+    create: bool,
+    create_new: bool,
+}
+
+#[cfg(unix)]
+fn parse_mode(mode: &str) -> PyResult<ParsedMode> {
+    let base_modes = mode
+        .chars()
+        .filter(|character| matches!(character, 'r' | 'w' | 'a' | 'x'))
+        .collect::<Vec<_>>();
+    let plus_count = mode.chars().filter(|character| *character == '+').count();
+    let binary_count = mode.chars().filter(|character| *character == 'b').count();
+    let text_count = mode.chars().filter(|character| *character == 't').count();
+    let valid_characters = mode
+        .chars()
+        .all(|character| matches!(character, 'r' | 'w' | 'a' | 'x' | 'b' | 't' | '+'));
+
+    if !valid_characters
+        || base_modes.len() != 1
+        || plus_count > 1
+        || binary_count > 1
+        || text_count > 1
+        || (binary_count == 1 && text_count == 1)
+    {
+        return Err(PyValueError::new_err(format!(
+            "invalid file mode: '{mode}'"
+        )));
+    }
+
+    let update = plus_count == 1;
+    Ok(match base_modes[0] {
+        'r' => ParsedMode {
+            read: true,
+            write: update,
+            append: false,
+            truncate: false,
+            create: false,
+            create_new: false,
+        },
+        'w' => ParsedMode {
+            read: update,
+            write: true,
+            append: false,
+            truncate: true,
+            create: true,
+            create_new: false,
+        },
+        'a' => ParsedMode {
+            read: update,
+            write: false,
+            append: true,
+            truncate: false,
+            create: true,
+            create_new: false,
+        },
+        'x' => ParsedMode {
+            read: update,
+            write: true,
+            append: false,
+            truncate: false,
+            create: false,
+            create_new: true,
+        },
+        _ => unreachable!(),
+    })
+}
+
+#[cfg(unix)]
+fn file_to_python(py: Python<'_>, file: File, mode: &str) -> PyResult<Py<PyAny>> {
+    let kwargs = PyDict::new(py);
+    kwargs.set_item("closefd", true)?;
+    let raw_fd = file.into_raw_fd();
+    let result = py
+        .import("builtins")?
+        .call_method("open", (raw_fd, mode), Some(&kwargs));
+    match result {
+        Ok(file) => Ok(file.unbind()),
+        Err(error) => {
+            // Python did not accept ownership, so close the descriptor here.
+            drop(unsafe { File::from_raw_fd(raw_fd) });
+            Err(error)
+        }
+    }
+}
+
+#[cfg(unix)]
+#[pyclass(name = "FdJail")]
+struct PyFdJail {
+    inner: RustFdJail,
+}
+
+#[cfg(unix)]
+impl PyFdJail {
+    #[allow(clippy::too_many_arguments)]
+    fn open_guarded(
+        &self,
+        path: PathBuf,
+        mode: &str,
+        require_regular_file: bool,
+        reject_hard_links: bool,
+        no_symlinks: bool,
+        no_xdev: bool,
+    ) -> PyResult<(File, PyAttestation)> {
+        let parsed = parse_mode(mode)?;
+        let capabilities = self.inner.capabilities();
+        if no_symlinks && !capabilities.no_symlinks {
+            return Err(PyNotImplementedError::new_err(
+                "no_symlinks is not supported by the active guarded backend",
+            ));
+        }
+        if no_xdev && !capabilities.no_xdev {
+            return Err(PyNotImplementedError::new_err(
+                "no_xdev is not supported by the active guarded backend",
+            ));
+        }
+        let options = OpenOptions::new()
+            .read(parsed.read)
+            .write(parsed.write)
+            .append(parsed.append)
+            .truncate(parsed.truncate)
+            .create(parsed.create)
+            .create_new(parsed.create_new)
+            .require_regular_file(require_regular_file)
+            .reject_hard_links(reject_hard_links)
+            .no_symlinks(no_symlinks)
+            .no_xdev(no_xdev);
+        let guarded = self.inner.open(path, options).map_err(to_py_err)?;
+        let attestation = PyAttestation::from(guarded.attestation());
+        Ok((guarded.into_file(), attestation))
+    }
+
+    fn require_directory_operations(&self) -> PyResult<()> {
+        if self.inner.capabilities().directory_operations {
+            Ok(())
+        } else {
+            Err(PyNotImplementedError::new_err(
+                "guarded directory mutations require Linux x86_64/aarch64",
+            ))
+        }
+    }
+}
+
+#[cfg(unix)]
+#[pymethods]
+impl PyFdJail {
+    #[new]
+    fn new(root: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let root = extract_path(root)?;
+        let inner = RustFdJail::new(root).map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn root(&self) -> String {
+        path_to_string(normalize_path(self.inner.root().to_owned()))
+    }
+
+    fn capabilities(&self) -> PyGuardCapabilities {
+        let capabilities = self.inner.capabilities();
+        PyGuardCapabilities {
+            toctou_safe: capabilities.toctou_safe,
+            directory_operations: capabilities.directory_operations,
+            no_symlinks: capabilities.no_symlinks,
+            no_xdev: capabilities.no_xdev,
+        }
+    }
+
+    #[pyo3(signature = (path, mode = "r", *, require_regular_file = false, reject_hard_links = false, no_symlinks = false, no_xdev = false))]
+    #[allow(clippy::too_many_arguments)]
+    fn open(
+        &self,
+        py: Python<'_>,
+        path: &Bound<'_, PyAny>,
+        mode: &str,
+        require_regular_file: bool,
+        reject_hard_links: bool,
+        no_symlinks: bool,
+        no_xdev: bool,
+    ) -> PyResult<Py<PyAny>> {
+        let path = extract_path(path)?;
+        let (file, _) = self.open_guarded(
+            path,
+            mode,
+            require_regular_file,
+            reject_hard_links,
+            no_symlinks,
+            no_xdev,
+        )?;
+        file_to_python(py, file, mode)
+    }
+
+    #[pyo3(signature = (path, mode = "r", *, require_regular_file = false, reject_hard_links = false, no_symlinks = false, no_xdev = false))]
+    #[allow(clippy::too_many_arguments)]
+    fn open_with_attestation(
+        &self,
+        py: Python<'_>,
+        path: &Bound<'_, PyAny>,
+        mode: &str,
+        require_regular_file: bool,
+        reject_hard_links: bool,
+        no_symlinks: bool,
+        no_xdev: bool,
+    ) -> PyResult<(Py<PyAny>, PyAttestation)> {
+        let path = extract_path(path)?;
+        let (file, attestation) = self.open_guarded(
+            path,
+            mode,
+            require_regular_file,
+            reject_hard_links,
+            no_symlinks,
+            no_xdev,
+        )?;
+        Ok((file_to_python(py, file, mode)?, attestation))
+    }
+
+    #[pyo3(signature = (path, *, require_regular_file = false, reject_hard_links = false, no_symlinks = false, no_xdev = false))]
+    fn create(
+        &self,
+        py: Python<'_>,
+        path: &Bound<'_, PyAny>,
+        require_regular_file: bool,
+        reject_hard_links: bool,
+        no_symlinks: bool,
+        no_xdev: bool,
+    ) -> PyResult<Py<PyAny>> {
+        self.open(
+            py,
+            path,
+            "xb",
+            require_regular_file,
+            reject_hard_links,
+            no_symlinks,
+            no_xdev,
+        )
+    }
+
+    fn create_dir(&self, path: &Bound<'_, PyAny>) -> PyResult<()> {
+        #[cfg(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
+        {
+            self.require_directory_operations()?;
+            let path = extract_path(path)?;
+            self.inner.create_dir(path).map_err(to_py_err)
+        }
+        #[cfg(not(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )))]
+        {
+            let _ = path;
+            self.require_directory_operations()
+        }
+    }
+
+    fn remove_file(&self, path: &Bound<'_, PyAny>) -> PyResult<()> {
+        #[cfg(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
+        {
+            self.require_directory_operations()?;
+            let path = extract_path(path)?;
+            self.inner.remove_file(path).map_err(to_py_err)
+        }
+        #[cfg(not(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )))]
+        {
+            let _ = path;
+            self.require_directory_operations()
+        }
+    }
+
+    fn remove_dir(&self, path: &Bound<'_, PyAny>) -> PyResult<()> {
+        #[cfg(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
+        {
+            self.require_directory_operations()?;
+            let path = extract_path(path)?;
+            self.inner.remove_dir(path).map_err(to_py_err)
+        }
+        #[cfg(not(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )))]
+        {
+            let _ = path;
+            self.require_directory_operations()
+        }
+    }
+
+    fn rename(&self, source: &Bound<'_, PyAny>, destination: &Bound<'_, PyAny>) -> PyResult<()> {
+        #[cfg(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
+        {
+            self.require_directory_operations()?;
+            let source = extract_path(source)?;
+            let destination = extract_path(destination)?;
+            self.inner.rename(source, destination).map_err(to_py_err)
+        }
+        #[cfg(not(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )))]
+        {
+            let _ = (source, destination);
+            self.require_directory_operations()
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("FdJail('{}')", self.inner.root().display())
+    }
+}
+
+#[cfg(windows)]
+#[pyclass(name = "FdJail")]
+struct PyFdJail;
+
+#[cfg(windows)]
+#[pymethods]
+impl PyFdJail {
+    #[new]
+    fn new(_root: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Err(PyNotImplementedError::new_err(
+            "FdJail is available on Unix platforms only",
+        ))
+    }
+}
+
 /// One-shot path validation.
 ///
 /// This is a convenience function for validating a single path.
@@ -280,6 +726,9 @@ fn join(root: &Bound<'_, PyAny>, path: &Bound<'_, PyAny>) -> PyResult<String> {
 #[pymodule]
 fn path_jail(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Jail>()?;
+    m.add_class::<PyFdJail>()?;
+    m.add_class::<PyGuardCapabilities>()?;
+    m.add_class::<PyAttestation>()?;
     m.add_function(wrap_pyfunction!(join, m)?)?;
     Ok(())
 }
