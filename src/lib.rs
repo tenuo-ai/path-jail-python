@@ -11,7 +11,7 @@ use pyo3::types::{PyString, PyTuple};
 #[cfg(unix)]
 use std::fs::File;
 #[cfg(unix)]
-use std::os::fd::{FromRawFd, IntoRawFd};
+use std::os::fd::IntoRawFd;
 use std::path::PathBuf;
 
 /// Maximum path length before we keep the \\?\ prefix on Windows.
@@ -338,6 +338,9 @@ impl From<&RustAttestation> for PyAttestation {
 #[cfg(unix)]
 #[derive(Clone, Copy)]
 struct ParsedMode {
+    base: char,
+    binary: bool,
+    update: bool,
     read: bool,
     write: bool,
     append: bool,
@@ -372,8 +375,12 @@ fn parse_mode(mode: &str) -> PyResult<ParsedMode> {
     }
 
     let update = plus_count == 1;
+    let binary = binary_count == 1;
     Ok(match base_modes[0] {
         'r' => ParsedMode {
+            base: 'r',
+            binary,
+            update,
             read: true,
             write: update,
             append: false,
@@ -382,6 +389,9 @@ fn parse_mode(mode: &str) -> PyResult<ParsedMode> {
             create_new: false,
         },
         'w' => ParsedMode {
+            base: 'w',
+            binary,
+            update,
             read: update,
             write: true,
             append: false,
@@ -390,6 +400,9 @@ fn parse_mode(mode: &str) -> PyResult<ParsedMode> {
             create_new: false,
         },
         'a' => ParsedMode {
+            base: 'a',
+            binary,
+            update,
             read: update,
             write: false,
             append: true,
@@ -398,6 +411,9 @@ fn parse_mode(mode: &str) -> PyResult<ParsedMode> {
             create_new: false,
         },
         'x' => ParsedMode {
+            base: 'x',
+            binary,
+            update,
             read: update,
             write: true,
             append: false,
@@ -410,20 +426,42 @@ fn parse_mode(mode: &str) -> PyResult<ParsedMode> {
 }
 
 #[cfg(unix)]
-fn file_to_python(py: Python<'_>, file: File, mode: &str) -> PyResult<Py<PyAny>> {
+fn file_to_python(
+    py: Python<'_>,
+    file: File,
+    mode: ParsedMode,
+    requested_mode: &str,
+) -> PyResult<Py<PyAny>> {
+    let io = py.import("io")?;
+    let file_io = io.getattr("FileIO")?;
+    let buffered_type = if mode.update {
+        io.getattr("BufferedRandom")?
+    } else if mode.read {
+        io.getattr("BufferedReader")?
+    } else {
+        io.getattr("BufferedWriter")?
+    };
+    let text_io_wrapper = if mode.binary {
+        None
+    } else {
+        Some(io.getattr("TextIOWrapper")?)
+    };
     let kwargs = PyDict::new(py);
     kwargs.set_item("closefd", true)?;
+
+    let raw_mode = format!("{}b{}", mode.base, if mode.update { "+" } else { "" });
     let raw_fd = file.into_raw_fd();
-    let result = py
-        .import("builtins")?
-        .call_method("open", (raw_fd, mode), Some(&kwargs));
-    match result {
-        Ok(file) => Ok(file.unbind()),
-        Err(error) => {
-            // Python did not accept ownership, so close the descriptor here.
-            drop(unsafe { File::from_raw_fd(raw_fd) });
-            Err(error)
+    // FileIO is the single ownership handoff. If a buffered or text wrapper
+    // fails, dropping `raw` closes the descriptor exactly once.
+    let raw = file_io.call((raw_fd, raw_mode), Some(&kwargs))?;
+    let buffered = buffered_type.call1((raw,))?;
+    match text_io_wrapper {
+        Some(wrapper) => {
+            let text = wrapper.call1((buffered,))?;
+            text.setattr("mode", requested_mode)?;
+            Ok(text.unbind())
         }
+        None => Ok(buffered.unbind()),
     }
 }
 
@@ -436,15 +474,14 @@ struct PyFdJail {
 #[cfg(unix)]
 impl PyFdJail {
     #[allow(clippy::too_many_arguments)]
-    fn open_guarded(
+    fn options(
         &self,
-        path: PathBuf,
         mode: &str,
         require_regular_file: bool,
         reject_hard_links: bool,
         no_symlinks: bool,
         no_xdev: bool,
-    ) -> PyResult<(File, PyAttestation)> {
+    ) -> PyResult<(ParsedMode, OpenOptions)> {
         let parsed = parse_mode(mode)?;
         let capabilities = self.inner.capabilities();
         if no_symlinks && !capabilities.no_symlinks {
@@ -468,7 +505,15 @@ impl PyFdJail {
             .reject_hard_links(reject_hard_links)
             .no_symlinks(no_symlinks)
             .no_xdev(no_xdev);
-        let guarded = self.inner.open(path, options).map_err(to_py_err)?;
+        Ok((parsed, options))
+    }
+
+    fn open_guarded(
+        &self,
+        path: PathBuf,
+        options: OpenOptions,
+    ) -> Result<(File, PyAttestation), JailError> {
+        let guarded = self.inner.open(path, options)?;
         let attestation = PyAttestation::from(guarded.attestation());
         Ok((guarded.into_file(), attestation))
     }
@@ -522,15 +567,17 @@ impl PyFdJail {
         no_xdev: bool,
     ) -> PyResult<Py<PyAny>> {
         let path = extract_path(path)?;
-        let (file, _) = self.open_guarded(
-            path,
+        let (parsed, options) = self.options(
             mode,
             require_regular_file,
             reject_hard_links,
             no_symlinks,
             no_xdev,
         )?;
-        file_to_python(py, file, mode)
+        let (file, _) = py
+            .detach(|| self.open_guarded(path, options))
+            .map_err(to_py_err)?;
+        file_to_python(py, file, parsed, mode)
     }
 
     #[pyo3(signature = (path, mode = "r", *, require_regular_file = false, reject_hard_links = false, no_symlinks = false, no_xdev = false))]
@@ -546,15 +593,17 @@ impl PyFdJail {
         no_xdev: bool,
     ) -> PyResult<(Py<PyAny>, PyAttestation)> {
         let path = extract_path(path)?;
-        let (file, attestation) = self.open_guarded(
-            path,
+        let (parsed, options) = self.options(
             mode,
             require_regular_file,
             reject_hard_links,
             no_symlinks,
             no_xdev,
         )?;
-        Ok((file_to_python(py, file, mode)?, attestation))
+        let (file, attestation) = py
+            .detach(|| self.open_guarded(path, options))
+            .map_err(to_py_err)?;
+        Ok((file_to_python(py, file, parsed, mode)?, attestation))
     }
 
     #[pyo3(signature = (path, *, require_regular_file = false, reject_hard_links = false, no_symlinks = false, no_xdev = false))]
@@ -672,7 +721,8 @@ struct PyFdJail;
 #[pymethods]
 impl PyFdJail {
     #[new]
-    fn new(_root: &Bound<'_, PyAny>) -> PyResult<Self> {
+    fn new(root: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let _ = root;
         Err(PyNotImplementedError::new_err(
             "FdJail is available on Unix platforms only",
         ))

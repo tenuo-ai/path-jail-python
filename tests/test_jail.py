@@ -1,7 +1,9 @@
+import gc
 import os
+import subprocess
 import sys
 import tempfile
-from io import IOBase
+from io import IOBase, UnsupportedOperation
 from pathlib import Path
 
 import pytest
@@ -460,7 +462,7 @@ class TestFdJail:
         if sys.platform != "win32":
             pytest.skip("Windows-only behavior")
         with pytest.raises(NotImplementedError, match="Unix"):
-            FdJail(jail_dir)
+            FdJail(root=jail_dir)
 
     @pytest.mark.skipif(sys.platform == "win32", reason="FdJail is Unix-only")
     def test_open_returns_normal_python_file(self, jail_dir):
@@ -485,6 +487,7 @@ class TestFdJail:
     def test_write_append_and_update_modes(self, jail_dir):
         jail = FdJail(jail_dir)
         with jail.open("value.txt", "w") as file:
+            assert file.mode == "w"
             file.write("one")
         with jail.open("value.txt", "a") as file:
             file.write(" two")
@@ -500,6 +503,53 @@ class TestFdJail:
         jail = FdJail(jail_dir)
         with pytest.raises(ValueError, match="invalid file mode"):
             jail.open("value.txt", mode)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="FdJail is Unix-only")
+    def test_non_seekable_wrapper_failure_closes_descriptor_once(self, jail_dir):
+        os.mkfifo(Path(jail_dir, "pipe"))
+        jail = FdJail(jail_dir)
+        before = len(os.listdir("/dev/fd"))
+
+        for _ in range(20):
+            with pytest.raises(UnsupportedOperation):
+                jail.open("pipe", "r+")
+
+        gc.collect()
+        assert len(os.listdir("/dev/fd")) <= before
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="FdJail is Unix-only")
+    def test_blocking_open_releases_gil(self, jail_dir):
+        script = """
+import os
+import sys
+import threading
+import time
+from path_jail import FdJail
+
+root = sys.argv[1]
+fifo = os.path.join(root, "blocking-pipe")
+os.mkfifo(fifo)
+jail = FdJail(root)
+
+def write_later():
+    time.sleep(0.1)
+    fd = os.open(fifo, os.O_WRONLY)
+    try:
+        os.write(fd, b"ready")
+    finally:
+        os.close(fd)
+
+writer = threading.Thread(target=write_later)
+writer.start()
+with jail.open("blocking-pipe", "rb") as file:
+    assert file.read() == b"ready"
+writer.join()
+"""
+        subprocess.run(
+            [sys.executable, "-c", script, jail_dir],
+            check=True,
+            timeout=5,
+        )
 
     @pytest.mark.skipif(sys.platform == "win32", reason="FdJail is Unix-only")
     def test_open_with_attestation(self, jail_dir):
@@ -548,6 +598,18 @@ class TestFdJail:
         finally:
             outside.close()
             os.unlink(outside.name)
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="no_symlinks requires Linux")
+    def test_no_symlinks_rejects_internal_symlink(self, jail_dir):
+        Path(jail_dir, "target.txt").write_text("inside", encoding="utf-8")
+        os.symlink("target.txt", Path(jail_dir, "link.txt"))
+        jail = FdJail(jail_dir)
+        assert jail.capabilities().no_symlinks
+
+        with jail.open("link.txt") as file:
+            assert file.read() == "inside"
+        with pytest.raises(ValueError):
+            jail.open("link.txt", no_symlinks=True)
 
     @pytest.mark.skipif(sys.platform == "win32", reason="FdJail is Unix-only")
     def test_capabilities_and_directory_mutations(self, jail_dir):
